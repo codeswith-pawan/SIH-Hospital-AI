@@ -53,15 +53,22 @@ MODEL_FEATURES = [
 ]
 
 
+_MODEL_CACHE = None
+
+
 def load_model():
-    """Load trained Random Forest model."""
+    """Load trained Random Forest model with in-memory singleton cache."""
+    global _MODEL_CACHE
+    if _MODEL_CACHE is not None:
+        return _MODEL_CACHE
 
     if not os.path.exists(MODEL_PATH):
         raise FileNotFoundError(
             f"Model not found: {MODEL_PATH}"
         )
 
-    return joblib.load(MODEL_PATH)
+    _MODEL_CACHE = joblib.load(MODEL_PATH)
+    return _MODEL_CACHE
 
 
 def build_prediction_features(patient, hospital):
@@ -137,26 +144,34 @@ def predict_referral_success(
     for one patient-hospital pair.
     """
 
-    model = load_model()
+    try:
+        model = load_model()
 
-    X = build_prediction_features(
-        patient,
-        hospital
-    )
-
-    probability = model.predict_proba(
-        X
-    )[0][1]
-
-    prediction = model.predict(X)[0]
-
-    return {
-        "prediction": int(prediction),
-        "success_probability": round(
-            float(probability),
-            4
+        X = build_prediction_features(
+            patient,
+            hospital
         )
-    }
+
+        probabilities = model.predict_proba(X)
+        probability = float(probabilities[0][1])
+
+        import math
+        if math.isnan(probability) or not (0.0 <= probability <= 1.0):
+            probability = None
+        else:
+            probability = round(probability, 4)
+
+        prediction = int(model.predict(X)[0])
+
+        return {
+            "prediction": prediction if probability is not None else 0,
+            "success_probability": probability,
+        }
+    except Exception:
+        return {
+            "prediction": 0,
+            "success_probability": None,
+        }
 
 
 def validate_model_features():

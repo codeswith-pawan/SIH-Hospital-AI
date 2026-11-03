@@ -25,12 +25,34 @@ def build_referral_features(patient, hospital):
     # Distance
     # --------------------------------
 
-    distance_km = calculate_distance_km(
-        float(patient["latitude"]),
-        float(patient["longitude"]),
-        float(hospital["latitude"]),
-        float(hospital["longitude"]),
-    )
+    try:
+        raw_plat = patient.get("latitude")
+        raw_plon = patient.get("longitude")
+        raw_hlat = hospital.get("latitude")
+        raw_hlon = hospital.get("longitude")
+
+        import math
+        plat = float(raw_plat) if raw_plat is not None else float("nan")
+        plon = float(raw_plon) if raw_plon is not None else float("nan")
+        hlat = float(raw_hlat) if raw_hlat is not None else float("nan")
+        hlon = float(raw_hlon) if raw_hlon is not None else float("nan")
+
+        if (
+            math.isnan(plat)
+            or math.isnan(plon)
+            or math.isnan(hlat)
+            or math.isnan(hlon)
+        ):
+            distance_km = 50.0
+        else:
+            distance_km = calculate_distance_km(
+                plat,
+                plon,
+                hlat,
+                hlon,
+            )
+    except (TypeError, ValueError, KeyError):
+        distance_km = 50.0
 
     # --------------------------------
     # Test Match
@@ -43,7 +65,7 @@ def build_referral_features(patient, hospital):
 
     test_match = (
         1
-        if test_result["all_available"]
+        if test_result.get("all_available")
         else 0
     )
 
@@ -58,7 +80,7 @@ def build_referral_features(patient, hospital):
 
     specialty_match = (
         1
-        if specialty_result["all_available"]
+        if specialty_result.get("all_available")
         else 0
     )
 
@@ -66,11 +88,11 @@ def build_referral_features(patient, hospital):
     # ICU Match
     # --------------------------------
 
-    if patient["icu_required"] == "Yes":
+    if patient.get("icu_required") == "Yes":
 
         icu_match = (
             1
-            if hospital["available_icu_beds"] > 0
+            if (hospital.get("available_icu_beds") or 0) > 0
             else 0
         )
 
@@ -82,11 +104,11 @@ def build_referral_features(patient, hospital):
     # Bed Match
     # --------------------------------
 
-    if patient["priority"] == "Critical":
+    if patient.get("priority") == "Critical":
 
         bed_match = (
             1
-            if hospital["available_emergency_beds"] > 0
+            if (hospital.get("available_emergency_beds") or 0) > 0
             else 0
         )
 
@@ -94,7 +116,7 @@ def build_referral_features(patient, hospital):
 
         bed_match = (
             1
-            if hospital["available_beds"] > 0
+            if (hospital.get("available_beds") or 0) > 0
             else 0
         )
 

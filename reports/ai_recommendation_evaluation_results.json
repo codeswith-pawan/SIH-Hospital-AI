@@ -1,0 +1,469 @@
+{
+  "timestamp": "2026-10-31 22:42:25",
+  "catalog_size": 500,
+  "heldout_zero_leakage_benchmark": {
+    "cohort_size": 200,
+    "queries_zero_eligible": 27,
+    "models": {
+      "hybrid": {
+        "queries_evaluated": 200,
+        "queries_with_recommendations": 173,
+        "top_1_accuracy": 0.9064,
+        "precision_at_1": 0.9064,
+        "precision_at_3": 0.885,
+        "precision_at_5": 0.884,
+        "recall_at_1": 0.6954,
+        "recall_at_3": 0.9985,
+        "recall_at_5": 1.0,
+        "ndcg_at_1": 0.9064,
+        "ndcg_at_3": 0.965,
+        "ndcg_at_5": 0.965,
+        "total_recommendations_evaluated": 298,
+        "eligibility_violation_rate": 0.0,
+        "bed_mismatch_rate": 0.0,
+        "specialty_mismatch_rate": 0.0,
+        "latency_mean_ms": 0.78,
+        "latency_p50_ms": 0.82,
+        "latency_p95_ms": 1.04
+      },
+      "rule": {
+        "queries_evaluated": 200,
+        "queries_with_recommendations": 173,
+        "top_1_accuracy": 0.9006,
+        "precision_at_1": 0.9006,
+        "precision_at_3": 0.885,
+        "precision_at_5": 0.884,
+        "recall_at_1": 0.6896,
+        "recall_at_3": 0.9985,
+        "recall_at_5": 1.0,
+        "ndcg_at_1": 0.9006,
+        "ndcg_at_3": 0.9623,
+        "ndcg_at_5": 0.9623,
+        "total_recommendations_evaluated": 298,
+        "eligibility_violation_rate": 0.0,
+        "bed_mismatch_rate": 0.0,
+        "specialty_mismatch_rate": 0.0,
+        "latency_mean_ms": 0.67,
+        "latency_p50_ms": 0.71,
+        "latency_p95_ms": 0.91
+      },
+      "ml_constrained": {
+        "queries_evaluated": 200,
+        "queries_with_recommendations": 173,
+        "top_1_accuracy": 0.9064,
+        "precision_at_1": 0.9064,
+        "precision_at_3": 0.885,
+        "precision_at_5": 0.884,
+        "recall_at_1": 0.6896,
+        "recall_at_3": 0.9985,
+        "recall_at_5": 1.0,
+        "ndcg_at_1": 0.9064,
+        "ndcg_at_3": 0.9638,
+        "ndcg_at_5": 0.9638,
+        "total_recommendations_evaluated": 298,
+        "eligibility_violation_rate": 0.0,
+        "bed_mismatch_rate": 0.0,
+        "specialty_mismatch_rate": 0.0,
+        "latency_mean_ms": 0.66,
+        "latency_p50_ms": 0.69,
+        "latency_p95_ms": 0.9
+      },
+      "ml_unconstrained": {
+        "queries_evaluated": 200,
+        "queries_with_recommendations": 200,
+        "top_1_accuracy": 0.87,
+        "precision_at_1": 0.87,
+        "precision_at_3": 0.6983,
+        "precision_at_5": 0.6927,
+        "recall_at_1": 0.6058,
+        "recall_at_3": 0.9975,
+        "recall_at_5": 1.0,
+        "ndcg_at_1": 0.87,
+        "ndcg_at_3": 0.948,
+        "ndcg_at_5": 0.948,
+        "total_recommendations_evaluated": 471,
+        "eligibility_violation_rate": 0.3631,
+        "bed_mismatch_rate": 0.0149,
+        "specialty_mismatch_rate": 0.1592,
+        "latency_mean_ms": 0.81,
+        "latency_p50_ms": 0.85,
+        "latency_p95_ms": 0.95
+      }
+    }
+  },
+  "in_sample_strict_benchmark": {
+    "cohort_size": 200,
+    "queries_zero_eligible": 19,
+    "models": {
+      "hybrid": {
+        "queries_evaluated": 200,
+        "queries_with_recommendations": 181,
+        "top_1_accuracy": 0.8621,
+        "precision_at_1": 0.8621,
+        "precision_at_3": 0.8352,
+        "precision_at_5": 0.8327,
+        "recall_at_1": 0.5125,
+        "recall_at_3": 0.9368,
+        "recall_at_5": 0.9948,
+        "ndcg_at_1": 0.8621,
+        "ndcg_at_3": 0.9235,
+        "ndcg_at_5": 0.9423,
+        "total_recommendations_evaluated": 446,
+        "eligibility_violation_rate": 0.0,
+        "bed_mismatch_rate": 0.0,
+        "specialty_mismatch_rate": 0.0,
+        "latency_mean_ms": 0.85,
+        "latency_p50_ms": 0.97,
+        "latency_p95_ms": 1.05
+      },
+      "rule": {
+        "queries_evaluated": 200,
+        "queries_with_recommendations": 181,
+        "top_1_accuracy": 0.8621,
+        "precision_at_1": 0.8621,
+        "precision_at_3": 0.8333,
+        "precision_at_5": 0.8327,
+        "recall_at_1": 0.5125,
+        "recall_at_3": 0.9339,
+        "recall_at_5": 0.9948,
+        "ndcg_at_1": 0.8621,
+        "ndcg_at_3": 0.9204,
+        "ndcg_at_5": 0.9408,
+        "total_recommendations_evaluated": 446,
+        "eligibility_violation_rate": 0.0,
+        "bed_mismatch_rate": 0.0,
+        "specialty_mismatch_rate": 0.0,
+        "latency_mean_ms": 0.74,
+        "latency_p50_ms": 0.79,
+        "latency_p95_ms": 0.94
+      },
+      "ml_constrained": {
+        "queries_evaluated": 200,
+        "queries_with_recommendations": 181,
+        "top_1_accuracy": 0.931,
+        "precision_at_1": 0.931,
+        "precision_at_3": 0.8448,
+        "precision_at_5": 0.8327,
+        "recall_at_1": 0.563,
+        "recall_at_3": 0.9456,
+        "recall_at_5": 0.9941,
+        "ndcg_at_1": 0.931,
+        "ndcg_at_3": 0.9529,
+        "ndcg_at_5": 0.9647,
+        "total_recommendations_evaluated": 446,
+        "eligibility_violation_rate": 0.0,
+        "bed_mismatch_rate": 0.0,
+        "specialty_mismatch_rate": 0.0,
+        "latency_mean_ms": 0.73,
+        "latency_p50_ms": 0.85,
+        "latency_p95_ms": 0.92
+      },
+      "ml_unconstrained": {
+        "queries_evaluated": 200,
+        "queries_with_recommendations": 200,
+        "top_1_accuracy": 0.885,
+        "precision_at_1": 0.885,
+        "precision_at_3": 0.6775,
+        "precision_at_5": 0.6066,
+        "recall_at_1": 0.4361,
+        "recall_at_3": 0.8905,
+        "recall_at_5": 0.9806,
+        "ndcg_at_1": 0.885,
+        "ndcg_at_3": 0.9015,
+        "ndcg_at_5": 0.9307,
+        "total_recommendations_evaluated": 776,
+        "eligibility_violation_rate": 0.4162,
+        "bed_mismatch_rate": 0.0193,
+        "specialty_mismatch_rate": 0.1688,
+        "latency_mean_ms": 0.87,
+        "latency_p50_ms": 0.87,
+        "latency_p95_ms": 0.96
+      }
+    }
+  },
+  "in_sample_phase19_bug_reproduction": {
+    "cohort_size": 200,
+    "queries_zero_eligible": 19,
+    "models": {
+      "hybrid": {
+        "queries_evaluated": 200,
+        "queries_with_recommendations": 200,
+        "top_1_accuracy": 0.8549,
+        "precision_at_1": 0.8549,
+        "precision_at_3": 0.8031,
+        "precision_at_5": 0.7959,
+        "recall_at_1": 0.5182,
+        "recall_at_3": 0.937,
+        "recall_at_5": 0.9953,
+        "ndcg_at_1": 0.8549,
+        "ndcg_at_3": 0.9174,
+        "ndcg_at_5": 0.9378,
+        "total_recommendations_evaluated": 517,
+        "eligibility_violation_rate": 0.1373,
+        "bed_mismatch_rate": 0.0058,
+        "specialty_mismatch_rate": 0.0696,
+        "latency_mean_ms": 0.94,
+        "latency_p50_ms": 0.99,
+        "latency_p95_ms": 1.05
+      },
+      "rule": {
+        "queries_evaluated": 200,
+        "queries_with_recommendations": 200,
+        "top_1_accuracy": 0.8497,
+        "precision_at_1": 0.8497,
+        "precision_at_3": 0.7979,
+        "precision_at_5": 0.7959,
+        "recall_at_1": 0.513,
+        "recall_at_3": 0.9301,
+        "recall_at_5": 0.9953,
+        "ndcg_at_1": 0.8497,
+        "ndcg_at_3": 0.9096,
+        "ndcg_at_5": 0.9337,
+        "total_recommendations_evaluated": 517,
+        "eligibility_violation_rate": 0.1373,
+        "bed_mismatch_rate": 0.0058,
+        "specialty_mismatch_rate": 0.0696,
+        "latency_mean_ms": 0.82,
+        "latency_p50_ms": 0.88,
+        "latency_p95_ms": 0.93
+      },
+      "ml_constrained": {
+        "queries_evaluated": 200,
+        "queries_with_recommendations": 200,
+        "top_1_accuracy": 0.9119,
+        "precision_at_1": 0.9119,
+        "precision_at_3": 0.8117,
+        "precision_at_5": 0.7959,
+        "recall_at_1": 0.556,
+        "recall_at_3": 0.9449,
+        "recall_at_5": 0.9946,
+        "ndcg_at_1": 0.9119,
+        "ndcg_at_3": 0.9428,
+        "ndcg_at_5": 0.9568,
+        "total_recommendations_evaluated": 517,
+        "eligibility_violation_rate": 0.1373,
+        "bed_mismatch_rate": 0.0058,
+        "specialty_mismatch_rate": 0.0696,
+        "latency_mean_ms": 0.82,
+        "latency_p50_ms": 0.87,
+        "latency_p95_ms": 0.91
+      },
+      "ml_unconstrained": {
+        "queries_evaluated": 200,
+        "queries_with_recommendations": 200,
+        "top_1_accuracy": 0.885,
+        "precision_at_1": 0.885,
+        "precision_at_3": 0.6775,
+        "precision_at_5": 0.6066,
+        "recall_at_1": 0.4361,
+        "recall_at_3": 0.8905,
+        "recall_at_5": 0.9806,
+        "ndcg_at_1": 0.885,
+        "ndcg_at_3": 0.9015,
+        "ndcg_at_5": 0.9307,
+        "total_recommendations_evaluated": 776,
+        "eligibility_violation_rate": 0.4162,
+        "bed_mismatch_rate": 0.0193,
+        "specialty_mismatch_rate": 0.1688,
+        "latency_mean_ms": 0.86,
+        "latency_p50_ms": 0.87,
+        "latency_p95_ms": 0.92
+      }
+    }
+  },
+  "full_catalog_production": {
+    "patients_evaluated": 100,
+    "total_recommendations_produced": 483,
+    "eligibility_violation_rate": 0.0,
+    "bed_mismatch_rate": 0.0,
+    "specialty_mismatch_rate": 0.0,
+    "zone_distribution": {
+      "LOCAL": 0.9296,
+      "REGIONAL": 0.029,
+      "EXTENDED": 0.0414
+    },
+    "latency_mean_ms": 22.19,
+    "latency_p50_ms": 21.78,
+    "latency_p95_ms": 24.72
+  },
+  "scalability": {
+    "catalog_500": {
+      "catalog_size": 500,
+      "eligible_found": 179,
+      "mean_ms": 20.94,
+      "p50_ms": 21.04,
+      "p95_ms": 21.77
+    },
+    "catalog_5000": {
+      "catalog_size": 5000,
+      "eligible_found": 1790,
+      "mean_ms": 64.68,
+      "p50_ms": 65.0,
+      "p95_ms": 65.13
+    }
+  },
+  "clinical_scenarios": [
+    {
+      "scenario_id": "SCENARIO_01_URGENT",
+      "name": "Urgent Patient",
+      "description": "Patient with acute asthma needing pulmonology and urgent inpatient care.",
+      "expected_behavior": "Returns hospitals with pulmonology and general beds; local distance prioritized.",
+      "passed": true,
+      "hospitals_returned": 2,
+      "latency_ms": 22.91,
+      "notes": [
+        "Passed all clinical and structural assertions."
+      ],
+      "sample_reasons": [
+        "Nearby facility (11.4 km - LOCAL zone)",
+        "Specialty match: Pulmonology available for Asthma",
+        "Diagnostic capabilities confirmed: Pulmonary Function Test"
+      ]
+    },
+    {
+      "scenario_id": "SCENARIO_02_CRITICAL",
+      "name": "Critical Patient",
+      "description": "Heart Attack patient with low SpO2 needing 24x7 emergency and cardiology.",
+      "expected_behavior": "Enforces 24x7 emergency service, oxygen support, emergency beds, and cardiology.",
+      "passed": true,
+      "hospitals_returned": 5,
+      "latency_ms": 22.86,
+      "notes": [
+        "Passed all clinical and structural assertions."
+      ],
+      "sample_reasons": [
+        "Nearby facility (11.4 km - LOCAL zone)",
+        "Specialty match: Cardiology available for Heart Attack",
+        "Diagnostic capabilities confirmed: ECG, Troponin Test"
+      ]
+    },
+    {
+      "scenario_id": "SCENARIO_03_ICU_REQUIRED",
+      "name": "ICU Required Patient",
+      "description": "Sepsis patient requiring ICU bed, ventilator, and blood culture.",
+      "expected_behavior": "Hard filters out facilities with 0 ICU beds or missing blood culture.",
+      "passed": true,
+      "hospitals_returned": 7,
+      "latency_ms": 25.21,
+      "notes": [
+        "Passed all clinical and structural assertions."
+      ],
+      "sample_reasons": [
+        "Immediate proximity to patient (6.5 km - LOCAL zone)",
+        "Specialty match: General Medicine available for Sepsis",
+        "Diagnostic capabilities confirmed: Blood Culture"
+      ]
+    },
+    {
+      "scenario_id": "SCENARIO_04_GENERAL_WARD",
+      "name": "General Ward Patient",
+      "description": "Stable patient with fracture requiring orthopedics and general inpatient bed.",
+      "expected_behavior": "Returns facilities with orthopedics and available general beds.",
+      "passed": true,
+      "hospitals_returned": 6,
+      "latency_ms": 27.15,
+      "notes": [
+        "Passed all clinical and structural assertions."
+      ],
+      "sample_reasons": [
+        "Immediate proximity to patient (6.5 km - LOCAL zone)",
+        "Specialty match: Orthopedics available for Fracture",
+        "Diagnostic capabilities confirmed: X-Ray"
+      ]
+    },
+    {
+      "scenario_id": "SCENARIO_05_EMERGENCY_CASE",
+      "name": "Emergency Trauma Case",
+      "description": "Polytrauma patient requiring 24x7 emergency, trauma unit, and ambulance.",
+      "expected_behavior": "Enforces trauma unit capability, emergency service, oxygen, and ambulance.",
+      "passed": true,
+      "hospitals_returned": 3,
+      "latency_ms": 22.05,
+      "notes": [
+        "Passed all clinical and structural assertions."
+      ],
+      "sample_reasons": [
+        "Nearby facility (11.4 km - LOCAL zone)",
+        "Specialty match: Trauma Unit, Orthopedics available for Trauma",
+        "Diagnostic capabilities confirmed: CT Scan"
+      ]
+    },
+    {
+      "scenario_id": "SCENARIO_06_NO_REFERRAL",
+      "name": "Patient Not Requiring Referral",
+      "description": "Mild condition manageable locally without referral.",
+      "expected_behavior": "Returns exactly 0 hospitals with non-referral justification.",
+      "passed": true,
+      "hospitals_returned": 0,
+      "latency_ms": 0.0,
+      "notes": [
+        "Passed all clinical and structural assertions."
+      ],
+      "sample_reasons": []
+    },
+    {
+      "scenario_id": "SCENARIO_07_NO_ELIGIBLE",
+      "name": "No Eligible Hospital",
+      "description": "Rare clinical requirement not matching any facility in catalog.",
+      "expected_behavior": "Returns 0 hospitals gracefully without unhandled exceptions.",
+      "passed": true,
+      "hospitals_returned": 0,
+      "latency_ms": 0.89,
+      "notes": [
+        "Passed all clinical and structural assertions."
+      ],
+      "sample_reasons": []
+    },
+    {
+      "scenario_id": "SCENARIO_08_MISSING_LOCATION",
+      "name": "Missing Location Coordinates",
+      "description": "Patient record with NaN / None latitude and longitude.",
+      "expected_behavior": "Falls back to safe default distance (50.0 km) and processes cleanly.",
+      "passed": true,
+      "hospitals_returned": 10,
+      "latency_ms": 20.33,
+      "notes": [
+        "Passed all clinical and structural assertions."
+      ],
+      "sample_reasons": [
+        "Nearby facility (50.0 km - LOCAL zone)",
+        "Specialty match: Nephrology available for Kidney Failure",
+        "Diagnostic capabilities confirmed: Dialysis"
+      ]
+    },
+    {
+      "scenario_id": "SCENARIO_09_MISSING_CAPABILITY",
+      "name": "Missing Diagnostic Capability",
+      "description": "Patient requires MRI which is missing in a subset of candidate facilities.",
+      "expected_behavior": "All returned hospitals must have MRI == 'Yes'; disqualification reasons generated for others.",
+      "passed": true,
+      "hospitals_returned": 2,
+      "latency_ms": 20.92,
+      "notes": [
+        "Passed all clinical and structural assertions."
+      ],
+      "sample_reasons": [
+        "Immediate proximity to patient (3.6 km - LOCAL zone)",
+        "Specialty match: Neurology available for Stroke",
+        "Diagnostic capabilities confirmed: MRI"
+      ]
+    },
+    {
+      "scenario_id": "SCENARIO_10_ZERO_AVAILABLE_BEDS",
+      "name": "Zero Available Beds",
+      "description": "Patient needing general ward evaluated against hospital with 0 beds.",
+      "expected_behavior": "A hospital with 0 available beds must be strictly hard blocked as ineligible.",
+      "passed": true,
+      "hospitals_returned": 8,
+      "latency_ms": 29.6,
+      "notes": [
+        "Passed all clinical and structural assertions."
+      ],
+      "sample_reasons": [
+        "Nearby facility (11.4 km - LOCAL zone)",
+        "Specialty match: General Medicine available for Dengue",
+        "377 General inpatient beds currently available"
+      ]
+    }
+  ]
+}

@@ -1,16 +1,21 @@
-from fastapi import Header, HTTPException
+"""
+Authentication & Authorization Request Dependencies
+AI Powered Smart Hospital Referral System - Phase 17
+"""
 
+from fastapi import Header, HTTPException
 from src.auth.jwt_utils import decode_access_token
+from src.auth.rate_limiter import is_token_revoked
 
 
 def require_current_user(
     authorization: str | None = Header(default=None)
 ):
     """
-    Validate Bearer JWT token and return
-    the authenticated user payload.
+    Validate Bearer JWT token and return the authenticated user payload.
+    Checks authorization header format, verifies token signature and expiration,
+    and enforces distributed token revocation blocklist.
     """
-
     if not authorization:
         raise HTTPException(
             status_code=401,
@@ -29,6 +34,13 @@ def require_current_user(
         )
 
     token = parts[1]
+
+    # Explicit check against distributed token revocation blocklist
+    if is_token_revoked(token):
+        raise HTTPException(
+            status_code=401,
+            detail="Token has been revoked."
+        )
 
     user = decode_access_token(token)
 

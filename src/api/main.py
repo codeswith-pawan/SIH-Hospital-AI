@@ -3,25 +3,46 @@ FastAPI Backend
 AI Powered Smart Hospital Referral System
 """
 
+import math
+from contextlib import asynccontextmanager
 import pandas as pd
 from fastapi.middleware.cors import CORSMiddleware
 from src.database.database import SessionLocal
 from src.database.models import Hospital
+from typing import Optional
 from fastapi import (
     FastAPI,
     HTTPException,
     Depends,
+    Request,
+    Header,
+    Query,
 )
 from src.auth.jwt_utils import (
     create_access_token,
+    validate_production_security_config,
 )
 from src.auth.dependencies import (
     require_current_user,
+)
+from src.auth.rate_limiter import (
+    check_rate_limit,
+    check_login_rate_limits,
+    record_failure,
+    record_login_failure,
+    record_success,
+    record_login_success,
+    revoke_token,
+    is_token_revoked,
+    log_security_event,
+    validate_production_redis_config,
+    get_rate_limiter_status,
 )
 
 from src.api.schemas import (
     PatientReferralRequest,
     CreateReferralRequest,
+    ReferralStatusUpdateRequest,
 )
 from src.auth.schemas import (
     LoginRequest,
@@ -39,6 +60,7 @@ from src.auth.authorization import (
     can_view_referral,
     can_accept_or_reject,
     can_update_referral_status,
+    can_access_hospital,
 )
 
 from src.prediction.referral_engine import (
@@ -49,11 +71,16 @@ from src.prediction.feature_builder import (
 )
 
 from src.prediction.predict import (
-    predict_referral_success
+    predict_referral_success,
+    load_model,
+    MODEL_FEATURES,
 )
 
 from src.prediction.ranking_engine import (
     rank_hospitals
+)
+from src.prediction.recommendation import (
+    generate_recommendation_reason
 )
 
 from src.utils.referral_rules import (
@@ -71,6 +98,7 @@ from src.prediction.bed_reservation import (
 
 from src.prediction.reservation_store import (
     get_hospital_inventory,
+    load_bed_inventory,
 )
 from src.prediction.referral_store import (
     create_referral as create_stored_referral,
@@ -80,6 +108,16 @@ from src.prediction.referral_store import (
     attach_reservation,
 )
 from src.api.patient_routes import router as patient_router
+from src.api.admin_routes import router as admin_router
+
+@asynccontextmanager
+async def lifespan(app_instance: FastAPI):
+    validate_production_security_config()
+    from src.database.db_manager import validate_production_database_config
+    validate_production_database_config()
+    validate_production_redis_config()
+    yield
+
 
 app = FastAPI(
     title="AI Powered Smart Hospital Referral System",
@@ -88,6 +126,7 @@ app = FastAPI(
         "hospital ranking and bed reservation."
     ),
     version="1.0.0",
+    lifespan=lifespan,
 )
 
 app.add_middleware(
@@ -103,6 +142,7 @@ app.add_middleware(
 
 
 app.include_router(patient_router)
+app.include_router(admin_router)
 
 # ============================================================
 # HOSPITAL ACCESS AUTHORIZATION
@@ -205,80 +245,117 @@ def serialize_hospital(hospital):
         elif value in [0, "0", False, "No", "no"]:
             data[field] = "No"
 
+    # Ensure success_probability is a valid float in [0.0, 1.0] or None
+    raw_prob = data.get("success_probability")
+    validated_prob = None
+    try:
+        if raw_prob is not None and not pd.isna(raw_prob):
+            p = float(raw_prob)
+            if not math.isnan(p) and 0.0 <= p <= 1.0:
+                validated_prob = round(p, 4)
+    except (TypeError, ValueError):
+        validated_prob = None
+
+    # Safe numeric distance
+    raw_distance = data.get("distance_km")
+    distance_km = None
+    try:
+        if raw_distance is not None and not pd.isna(raw_distance):
+            d = float(raw_distance)
+            if not math.isnan(d):
+                distance_km = round(d, 2)
+    except (TypeError, ValueError):
+        distance_km = None
+
+    # Safe capability matching values (normalize to 1 or 0 integers)
+    def _to_match_int(v):
+        if v in [1, "1", True, "Yes", "yes"]:
+            return 1
+        return 0
+
+    specialty_match = _to_match_int(data.get("specialty_match"))
+    test_match = _to_match_int(data.get("test_match"))
+    bed_match = _to_match_int(data.get("bed_match"))
+    icu_match = _to_match_int(data.get("icu_match"))
+
+    hospital_name = data.get("name") or data.get("hospital_name") or ""
+    hospital_id = data.get("hospital_id") or ""
+
     return {
+        # Flat properties for backward compatibility and direct UI access
+        "hospital_id": hospital_id,
+        "hospital_name": hospital_name,
+        "name": hospital_name,
+        "state": data.get("state") or "",
+        "district": data.get("district") or "",
+        "city": data.get("city") or "",
+        "latitude": data.get("latitude"),
+        "longitude": data.get("longitude"),
+        "distance_km": distance_km,
+        "distance_zone": data.get("distance_zone") or "LOCAL",
+        "total_beds": data.get("total_beds") or 0,
+        "occupied_beds": data.get("occupied_beds") or 0,
+        "available_beds": data.get("available_beds") or 0,
+        "icu_beds": data.get("icu_beds") or 0,
+        "available_icu_beds": data.get("available_icu_beds") or 0,
+        "emergency_beds": data.get("emergency_beds") or 0,
+        "available_emergency_beds": data.get("available_emergency_beds") or 0,
+        "final_score": data.get("final_score"),
+        "hospital_score": data.get("hospital_score"),
+        "success_probability": validated_prob,
+        "ml_probability": validated_prob,
+        "occupancy_rate": data.get("occupancy_rate"),
         "rank": data.get("rank"),
-        "recommendation_type": data.get(
-            "recommendation_type"
-        ),
+        "recommendation_type": data.get("recommendation_type") or "Standard Recommendation",
+        "specialty_match": specialty_match,
+        "test_match": test_match,
+        "bed_match": bed_match,
+        "icu_match": icu_match,
 
+        # Structured nested objects
         "hospital": {
-            "hospital_id": data.get("hospital_id"),
-            "name": data.get("name"),
-
+            "hospital_id": hospital_id,
+            "name": hospital_name,
             "location": {
-                "state": data.get("state"),
-                "district": data.get("district"),
-                "city": data.get("city"),
+                "state": data.get("state") or "",
+                "district": data.get("district") or "",
+                "city": data.get("city") or "",
                 "latitude": data.get("latitude"),
                 "longitude": data.get("longitude"),
-                "distance_km": data.get("distance_km"),
-                "distance_zone": data.get(
-                    "distance_zone"
-                ),
+                "distance_km": distance_km,
+                "distance_zone": data.get("distance_zone") or "LOCAL",
             },
         },
 
         "beds": {
-            "total_beds": data.get("total_beds"),
-            "occupied_beds": data.get(
-                "occupied_beds"
-            ),
-            "available_beds": data.get(
-                "available_beds"
-            ),
-            "icu_beds": data.get("icu_beds"),
-            "available_icu_beds": data.get(
-                "available_icu_beds"
-            ),
-            "emergency_beds": data.get("emergency_beds"),
-            "available_emergency_beds": data.get(
-                "available_emergency_beds"
-            ),
+            "total_beds": data.get("total_beds") or 0,
+            "occupied_beds": data.get("occupied_beds") or 0,
+            "available_beds": data.get("available_beds") or 0,
+            "icu_beds": data.get("icu_beds") or 0,
+            "available_icu_beds": data.get("available_icu_beds") or 0,
+            "emergency_beds": data.get("emergency_beds") or 0,
+            "available_emergency_beds": data.get("available_emergency_beds") or 0,
         },
 
         "scores": {
             "final_score": data.get("final_score"),
-            "hospital_score": data.get(
-                "hospital_score"
-            ),
-            "success_probability": data.get(
-                "success_probability"
-            ),
-            "occupancy_rate": data.get(
-                "occupancy_rate"
-            ),
+            "hospital_score": data.get("hospital_score"),
+            "success_probability": validated_prob,
+            "occupancy_rate": data.get("occupancy_rate"),
         },
 
         "matching": {
-            "specialty_match": data.get(
-                "specialty_match"
-            ),
-            "test_match": data.get("test_match"),
-            "bed_match": data.get("bed_match"),
-            "icu_match": data.get("icu_match"),
+            "specialty_match": specialty_match,
+            "test_match": test_match,
+            "bed_match": bed_match,
+            "icu_match": icu_match,
         },
 
         "services": {
-            "emergency_24x7": data.get(
-                "emergency_24x7"
-            ),
-            "accepts_referral": data.get(
-                "accepts_referral"
-            ),
+            "emergency_24x7": data.get("emergency_24x7"),
+            "accepts_referral": data.get("accepts_referral"),
             "ambulance": data.get("ambulance"),
-            "oxygen_support": data.get(
-                "oxygen_support"
-            ),
+            "oxygen_support": data.get("oxygen_support"),
             "ventilator": data.get("ventilator"),
             "blood_bank": data.get("blood_bank"),
         },
@@ -289,12 +366,8 @@ def serialize_hospital(hospital):
             "nephrology": data.get("nephrology"),
             "pulmonology": data.get("pulmonology"),
             "orthopedics": data.get("orthopedics"),
-            "general_medicine": data.get(
-                "general_medicine"
-            ),
-            "general_surgery": data.get(
-                "general_surgery"
-            ),
+            "general_medicine": data.get("general_medicine"),
+            "general_surgery": data.get("general_surgery"),
             "trauma_unit": data.get("trauma_unit"),
             "burn_unit": data.get("burn_unit"),
         },
@@ -343,11 +416,29 @@ def health_check():
 # AUTHENTICATION
 # ============================================================
 
+def get_client_ip(req: Request) -> str:
+    """Extract client IP address, honoring X-Forwarded-For when deployed behind reverse proxies."""
+    forwarded = req.headers.get("x-forwarded-for")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    if req.client and req.client.host:
+        return req.client.host
+    return "unknown"
+
+
 @app.post(
     "/login",
     response_model=LoginResponse
 )
-def login(request: LoginRequest):
+def login(request: LoginRequest, req: Request):
+    client_ip = get_client_ip(req)
+    raw_username = request.username.strip()
+    normalized_username = raw_username.lower()
+    rate_key = f"{client_ip}:{normalized_username}"
+
+    # Dual-key rate limiting: checks both client IP and username atomically
+    check_login_rate_limits(client_ip=client_ip, username=normalized_username)
+    check_rate_limit(rate_key)
 
     user = authenticate_user(
         request.username,
@@ -355,10 +446,27 @@ def login(request: LoginRequest):
     )
 
     if user is None:
+        record_login_failure(client_ip=client_ip, username=normalized_username)
+        record_failure(rate_key)
+        log_security_event("LOGIN_FAILED", {
+            "ip": client_ip,
+            "username": normalized_username,
+            "reason": "invalid_credentials",
+        })
         raise HTTPException(
             status_code=401,
             detail="Invalid username or password."
         )
+
+    # Successful login resets failed attempts for this IP, username, and composite key
+    record_login_success(client_ip=client_ip, username=normalized_username)
+    record_success(rate_key)
+    log_security_event("LOGIN_SUCCESS", {
+        "ip": client_ip,
+        "username": normalized_username,
+        "user_id": user["user_id"],
+        "role": user["role"],
+    })
 
     access_token = create_access_token(user)
 
@@ -377,6 +485,57 @@ def login(request: LoginRequest):
             "district": user.get("district"),
         },
     }
+
+
+@app.post("/logout")
+def logout(req: Request, authorization: Optional[str] = Header(default=None)):
+    """
+    Invalidate the current session by placing the JWT on the distributed blocklist.
+    Subsequent requests using this token will be rejected with HTTP 401.
+    """
+    if not authorization:
+        raise HTTPException(
+            status_code=401,
+            detail="Authorization token required."
+        )
+
+    parts = authorization.split()
+    if len(parts) != 2 or parts[0].lower() != "bearer":
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid authorization header."
+        )
+
+    token = parts[1]
+    client_ip = get_client_ip(req)
+
+    user_id = "unknown"
+    exp_ts = None
+    try:
+        import jwt as pyjwt
+        unverified = pyjwt.decode(token, options={"verify_signature": False})
+        user_id = unverified.get("user_id") or unverified.get("sub", "unknown")
+        exp_ts = unverified.get("exp")
+    except Exception:
+        pass
+
+    revoke_token(token, exp_timestamp=exp_ts)
+    log_security_event("LOGOUT", {
+        "ip": client_ip,
+        "user_id": user_id,
+        "status": "revoked",
+    })
+
+    return {
+        "success": True,
+        "message": "Successfully logged out. Token has been revoked.",
+    }
+
+
+@app.get("/health/rate-limiter")
+def rate_limiter_health():
+    """Observability endpoint for rate limiter backend status."""
+    return get_rate_limiter_status()
   
 
 
@@ -897,15 +1056,10 @@ def get_hospital_dashboard_inventory(
     ),
 ):
     # ----------------------------------------
-    # Hospital users can access only their
-    # own hospital inventory
+    # Geographic role authorization check
     # ----------------------------------------
 
-    if (
-        current_user["role"] == "HOSPITAL"
-        and current_user.get("hospital_id")
-        != hospital_id
-    ):
+    if not can_access_hospital(current_user, hospital_id):
         raise HTTPException(
             status_code=403,
             detail=(
@@ -939,76 +1093,60 @@ def get_hospital_dashboard_inventory(
 # RANKED HOSPITALS
 # ============================================================
 
+_PATIENTS_CACHE: dict[str, dict] | None = None
+_HOSPITALS_CACHE: list[dict] | None = None
+
+
+def get_cached_patient(patient_id: str) -> dict | None:
+    global _PATIENTS_CACHE
+    if _PATIENTS_CACHE is None:
+        try:
+            df = pd.read_csv(PATIENTS_PATH)
+            _PATIENTS_CACHE = {
+                str(row["patient_id"]).strip(): row.to_dict()
+                for _, row in df.iterrows()
+            }
+        except Exception:
+            _PATIENTS_CACHE = {}
+
+    return _PATIENTS_CACHE.get(patient_id)
+
+
+def get_cached_hospitals() -> list[dict]:
+    global _HOSPITALS_CACHE
+    if _HOSPITALS_CACHE is None:
+        db = SessionLocal()
+        try:
+            records = db.query(Hospital).all()
+            _HOSPITALS_CACHE = [
+                {
+                    column.name: getattr(hospital, column.name)
+                    for column in Hospital.__table__.columns
+                }
+                for hospital in records
+            ]
+        finally:
+            db.close()
+    return _HOSPITALS_CACHE
+
+
 @app.get("/hospitals")
 def get_ranked_hospitals(
     patient_id: str
 ):
-
-    # ----------------------------------------
-    # Load datasets
-    # ----------------------------------------
-
-    try:
-
-        patients = pd.read_csv(
-            PATIENTS_PATH
-        )
-
-    except Exception as error:
-
+    if not patient_id or not patient_id.strip():
         raise HTTPException(
-            status_code=500,
-            detail={
-                "message":
-                    "Failed to load patients dataset.",
-                "error":
-                    str(error),
-            }
+            status_code=400,
+            detail="Patient ID is required."
         )
-
-    db = SessionLocal()
-
-    try:
-
-        hospital_records = db.query(
-            Hospital
-        ).all()
-
-    finally:
-
-        db.close()
-
-    if not hospital_records:
-
-        raise HTTPException(
-            status_code=404,
-            detail="No hospitals found in database."
-        )
-
-    hospitals = pd.DataFrame(
-        [
-            {
-                column.name: getattr(
-                    hospital,
-                    column.name
-                )
-                for column in Hospital.__table__.columns
-            }
-            for hospital in hospital_records
-        ]
-    )
+    patient_id = patient_id.strip()
 
     # ----------------------------------------
     # Find patient
     # ----------------------------------------
+    patient = get_cached_patient(patient_id)
 
-    patient_rows = patients[
-        patients["patient_id"]
-        == patient_id
-    ]
-
-    if patient_rows.empty:
-
+    if patient is None:
         raise HTTPException(
             status_code=404,
             detail=(
@@ -1017,182 +1155,162 @@ def get_ranked_hospitals(
             )
         )
 
-    patient = (
-        patient_rows
-        .iloc[0]
-        .to_dict()
-    )
-
     # ----------------------------------------
     # Referral required check
     # ----------------------------------------
-
-    if patient["referral_required"] != "Yes":
-
+    if patient.get("referral_required") != "Yes":
         return {
             "success": True,
             "patient_id": patient_id,
-            "message":
-                "Hospital referral is not required.",
+            "priority": patient.get("priority", "Stable"),
+            "total_hospitals": 0,
+            "referral_required": patient.get("referral_required", "No"),
+            "message": "Hospital referral is not clinically required for this patient.",
+            "reason": "Patient condition is evaluated as manageable locally without hospital transfer.",
             "hospitals": [],
         }
 
     # ----------------------------------------
-    # Build eligible hospitals
+    # Load hospitals reference data
     # ----------------------------------------
-
-    eligible_hospitals = []
-
-    for _, hospital_row in hospitals.iterrows():
-
-        hospital = hospital_row.to_dict()
-
-        # ------------------------------------
-        # Apply live bed inventory
-        # ------------------------------------
-
-        inventory = get_hospital_inventory(
-            hospital["hospital_id"]
+    hospitals_base = get_cached_hospitals()
+    if not hospitals_base:
+        raise HTTPException(
+            status_code=404,
+            detail="No hospitals found in database."
         )
 
-        if inventory is not None:
+    # ----------------------------------------
+    # Load live bed inventory ONCE outside loop
+    # (Eliminates repeated disk reads / JSON deserialization)
+    # ----------------------------------------
+    inventory_map = load_bed_inventory()
 
-            hospital["available_beds"] = (
-                inventory.get(
-                    "available_beds",
-                    hospital["available_beds"]
-                )
+    eligible_hospitals = []
+    feature_rows = []
+    disease = patient.get("disease")
+    priority = patient.get("priority")
+
+    # ----------------------------------------
+    # Build eligible hospitals & vector features
+    # ----------------------------------------
+    for h_base in hospitals_base:
+        hospital = h_base.copy()
+
+        # Apply live inventory counters in memory
+        inv = inventory_map.get(hospital["hospital_id"])
+        if inv is not None:
+            beds = inv.get("beds", {})
+            hospital["available_beds"] = sum(
+                s == "AVAILABLE" for b, s in beds.items() if b.startswith("GENERAL")
+            )
+            hospital["available_icu_beds"] = sum(
+                s == "AVAILABLE" for b, s in beds.items() if b.startswith("ICU")
+            )
+            hospital["available_emergency_beds"] = inv.get(
+                "available_emergency_beds", hospital.get("available_emergency_beds", 0)
             )
 
-            hospital["available_icu_beds"] = (
-                inventory.get(
-                    "available_icu_beds",
-                    hospital["available_icu_beds"]
-                )
-            )
-
-            hospital["available_emergency_beds"] = (
-                inventory.get(
-                    "available_emergency_beds",
-                    hospital["available_emergency_beds"]
-                )
-            )
-
-        capability = (
-            evaluate_hospital_capability(
-                patient,
-                hospital
-            )
+        capability = evaluate_hospital_capability(
+            patient,
+            hospital
         )
 
         if not capability["eligible"]:
-
             continue
 
-        # ------------------------------------
-        # Build production features
-        # ------------------------------------
-
-        features = (
-            build_referral_features(
-                patient,
-                hospital
-            )
+        features = build_referral_features(
+            patient,
+            hospital
         )
 
         hospital_data = hospital.copy()
+        hospital_data.update(features)
+        eligible_hospitals.append(hospital_data)
 
-        hospital_data.update(
-            features
-        )
-
-        # ------------------------------------
-        # ML prediction
-        # ------------------------------------
-
-        prediction = (
-            predict_referral_success(
-                patient,
-                hospital_data
-            )
-        )
-
-        hospital_data[
-            "success_probability"
-        ] = prediction[
-            "success_probability"
-        ]
-
-        hospital_data[
-            "ml_prediction"
-        ] = prediction[
-            "prediction"
-        ]
-
-        eligible_hospitals.append(
-            hospital_data
-        )
+        # Assemble feature row for single-pass batch inference
+        row = features.copy()
+        for feat in MODEL_FEATURES:
+            if feat.startswith("disease_"):
+                row[feat] = int(disease == feat[len("disease_"):])
+            elif feat.startswith("priority_"):
+                row[feat] = int(priority == feat[len("priority_"):])
+        feature_rows.append(row)
 
     # ----------------------------------------
     # No eligible hospital
     # ----------------------------------------
-
     if not eligible_hospitals:
-
         return {
             "success": True,
             "patient_id": patient_id,
-            "message":
-                "No eligible hospital found.",
+            "priority": patient.get("priority", "Standard"),
+            "total_hospitals": 0,
+            "disqualified_hospitals_count": len(hospitals_base),
+            "referral_required": patient.get("referral_required", "Yes"),
+            "message": "No eligible hospitals found matching patient clinical requirements.",
+            "reason": "All evaluated facilities either lack required specialties/tests, have zero matching beds, or do not accept external referrals.",
             "hospitals": [],
         }
 
     # ----------------------------------------
-    # DataFrame
+    # High-Performance Batch ML Prediction
     # ----------------------------------------
+    model = load_model()
+    batch_X = pd.DataFrame(feature_rows, columns=MODEL_FEATURES)
+    probabilities = model.predict_proba(batch_X)
 
-    eligible_df = pd.DataFrame(
-        eligible_hospitals
-    )
+    for i, h_data in enumerate(eligible_hospitals):
+        prob = float(probabilities[i][1])
+        if math.isnan(prob) or not (0.0 <= prob <= 1.0):
+            h_data["success_probability"] = None
+            h_data["ml_prediction"] = 0
+        else:
+            prob = round(prob, 4)
+            h_data["success_probability"] = prob
+            h_data["ml_prediction"] = int(prob >= 0.5)
 
     # ----------------------------------------
     # Rank hospitals
     # ----------------------------------------
-
+    eligible_df = pd.DataFrame(eligible_hospitals)
     ranked = rank_hospitals(
         eligible_df,
         patient["priority"]
     )
-
-    # ----------------------------------------
-    # Top hospitals
-    # ----------------------------------------
-
     ranked = ranked.head(10)
 
+    # ----------------------------------------
+    # Serialization
+    # ----------------------------------------
     hospitals_response = []
-
     for _, hospital in ranked.iterrows():
+        hospital_data = hospital.to_dict()
+        serialized = serialize_hospital(hospital_data)
 
-        hospital_data = (
-            hospital.to_dict()
-        )
-
-        hospitals_response.append(
-            serialize_hospital(
-                hospital_data
+        try:
+            serialized["reasons"] = generate_recommendation_reason(
+                hospital_data,
+                patient
             )
-        )
+        except Exception:
+            serialized["reasons"] = []
+
+        hospitals_response.append(serialized)
 
     return {
         "success": True,
         "patient_id": patient_id,
-        "priority":
-            patient["priority"],
-        "total_hospitals":
-            len(hospitals_response),
-        "hospitals":
-            hospitals_response,
+        "priority": patient.get("priority", "Standard"),
+        "total_hospitals": len(hospitals_response),
+        "disqualified_hospitals_count": len(hospitals_base) - len(eligible_hospitals),
+        "referral_required": patient.get("referral_required", "Yes"),
+        "message": f"Found {len(hospitals_response)} eligible hospital(s) ranked by clinical capability and AI scoring.",
+        "ai_disclaimer": (
+            "AI recommendation is an assistive decision-support model based on proximity, "
+            "live bed availability, and specialty matching. It is not an autonomous medical certification."
+        ),
+        "hospitals": hospitals_response,
     }
 
 
@@ -1202,11 +1320,23 @@ def get_ranked_hospitals(
 
 @app.post("/referrals")
 def create_live_referral(
-    request: CreateReferralRequest
+    request: CreateReferralRequest,
+    current_user: Optional[dict] = Depends(require_current_user),
 ):
-    # ----------------------------------------
-    # Create referral
-    # ----------------------------------------
+    # Role authorization: Hospital accounts can only initiate or record referrals involving their hospital
+    if current_user and current_user.get("role") == "HOSPITAL":
+        user_hosp = current_user.get("hospital_id")
+        if user_hosp not in [request.from_hospital_id, request.to_hospital_id]:
+            raise HTTPException(
+                status_code=403,
+                detail="Hospital users are only authorized to initiate or record referrals involving their own hospital.",
+            )
+
+    if request.from_hospital_id == request.to_hospital_id:
+        raise HTTPException(
+            status_code=400,
+            detail="Source and destination hospitals cannot be identical.",
+        )
 
     result = create_stored_referral(
         patient_id=request.patient_id,
@@ -1214,7 +1344,16 @@ def create_live_referral(
         to_hospital_id=request.to_hospital_id,
         reason=request.reason,
         priority=request.priority,
+        bed_type=request.bed_type,
+        user_id=current_user.get("user_id") if current_user else None,
     )
+
+    if not result.get("success"):
+        status_code = 409 if result.get("status") == "ACTIVE_REFERRAL_EXISTS" else 400
+        raise HTTPException(
+            status_code=status_code,
+            detail=result.get("message", "Referral creation failed."),
+        )
 
     return result
 
@@ -1261,45 +1400,155 @@ def get_live_referral(
 
 @app.get("/patients/{patient_id}/referrals")
 def get_patient_referral_history(
-    patient_id: str
+    patient_id: str,
+    current_user: dict = Depends(
+        require_current_user
+    ),
 ):
+    if not patient_id or not patient_id.strip():
+        raise HTTPException(
+            status_code=400,
+            detail="Patient ID is required."
+        )
+
+    patient_id = patient_id.strip()
+
+    # Verify patient exists in system (CSV, SQLite DB, or runtime referrals)
+    patient_exists = False
+    try:
+        patients = pd.read_csv(PATIENTS_PATH)
+        patient_exists = not patients[patients["patient_id"] == patient_id].empty
+    except Exception:
+        pass
+
+    if not patient_exists:
+        from src.database.database import SessionLocal
+        from src.database.models import Patient
+        db = SessionLocal()
+        try:
+            db_pat = db.query(Patient).filter(Patient.patient_id == patient_id).first()
+            if db_pat is not None:
+                patient_exists = True
+        finally:
+            db.close()
+
     referrals = get_patient_referrals(
         patient_id
     )
 
+    if referrals:
+        patient_exists = True
+
+    if not patient_exists:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Patient {patient_id} not found."
+        )
+
+    # Filter referrals according to the logged-in user's permissions.
+    authorized_referrals = [
+        referral
+        for referral in referrals
+        if can_view_referral(
+            current_user,
+            referral
+        )
+    ]
+
+    scope_restricted = len(referrals) > 0 and len(authorized_referrals) == 0
+
+    if scope_restricted:
+        message = (
+            "Referral records exist for this patient, but they are restricted "
+            "to the originating or destination hospital."
+        )
+    elif len(authorized_referrals) == 0:
+        message = "No referral records exist for this patient."
+    else:
+        message = f"Found {len(authorized_referrals)} authorized referral record(s)."
+
     return {
         "success": True,
         "patient_id": patient_id,
-        "total_referrals": len(referrals),
-        "referrals": referrals,
+        "total_referrals": len(
+            authorized_referrals
+        ),
+        "total_system_referrals": len(referrals),
+        "scope_restricted": scope_restricted,
+        "message": message,
+        "referrals": authorized_referrals,
     }
 
 
 # ============================================================
-# HOSPITAL REFERRAL INBOX
+# HOSPITAL REFERRAL INBOX & OUTBOX
 # ============================================================
 
 @app.get("/hospitals/{hospital_id}/referrals")
 def get_hospital_referrals(
-    hospital_id: str
+    hospital_id: str,
+    scope: str = Query(default="incoming", pattern="^(incoming|outgoing|all)$"),
+    current_user: dict = Depends(
+        require_current_user
+    ),
 ):
     from src.prediction.referral_store import _load_referrals
+    from src.database.db_manager import is_postgres, get_referral_repository
+
+    # Geographic role authorization check
+    if not can_access_hospital(current_user, hospital_id):
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "You are not authorized to view referrals "
+                "for this hospital."
+            ),
+        )
+
+    if is_postgres():
+        try:
+            repo = get_referral_repository()
+            db_referrals = repo.get_hospital_referrals(hospital_id, scope=scope)
+            authorized = [r for r in db_referrals if can_view_referral(current_user, r)]
+            return {
+                "success": True,
+                "hospital_id": hospital_id,
+                "scope": scope,
+                "total_referrals": len(authorized),
+                "referrals": authorized,
+            }
+        except Exception:
+            pass
 
     stored_referrals = _load_referrals()
 
-    hospital_referrals = [
-        referral
-        for referral in stored_referrals
-        if referral.get("to_hospital_id")
-        == hospital_id
-    ]
+    if scope == "outgoing":
+        hospital_referrals = [
+            referral
+            for referral in stored_referrals
+            if referral.get("from_hospital_id") == hospital_id
+            and can_view_referral(current_user, referral)
+        ]
+    elif scope == "all":
+        hospital_referrals = [
+            referral
+            for referral in stored_referrals
+            if (referral.get("to_hospital_id") == hospital_id or referral.get("from_hospital_id") == hospital_id)
+            and can_view_referral(current_user, referral)
+        ]
+    else:
+        hospital_referrals = [
+            referral
+            for referral in stored_referrals
+            if referral.get("to_hospital_id") == hospital_id
+            and can_view_referral(current_user, referral)
+        ]
 
     return {
         "success": True,
         "hospital_id": hospital_id,
-        "total_referrals": len(
-            hospital_referrals
-        ),
+        "scope": scope,
+        "total_referrals": len(hospital_referrals),
         "referrals": hospital_referrals,
     }
 
@@ -1312,6 +1561,7 @@ def get_hospital_referrals(
 def update_live_referral_status(
     referral_id: str,
     new_status: str,
+    body: Optional[ReferralStatusUpdateRequest] = None,
     current_user: dict = Depends(
         require_current_user
     ),
@@ -1361,69 +1611,38 @@ def update_live_referral_status(
     # Authorization rules
     # ----------------------------------------
 
-    role = current_user["role"]
-    hospital_id = current_user.get(
-        "hospital_id"
-    )
+    role = current_user.get("role")
+    hospital_id = current_user.get("hospital_id")
 
-    # Hospital users have limited permissions
-    if role == "HOSPITAL":
+    if role != "HOSPITAL":
+        raise HTTPException(
+            status_code=403,
+            detail="Administrative roles cannot execute clinical referral transitions."
+        )
 
-        # Destination hospital:
-        # ACCEPTED or REJECTED
-        if new_status in [
-            "ACCEPTED",
-            "REJECTED"
-        ]:
-
-            if hospital_id != referral[
-                "to_hospital_id"
-            ]:
-                raise HTTPException(
-                    status_code=403,
-                    detail=(
-                        "Only the destination hospital "
-                        "can accept or reject this referral."
-                    )
-                )
-
-        # Source hospital:
-        # IN_TRANSIT
+    if not can_update_referral_status(current_user, referral, new_status):
+        if new_status in ["ACCEPTED", "REJECTED"]:
+            detail = "Only the destination hospital can accept or reject this referral."
         elif new_status == "IN_TRANSIT":
-
-            if hospital_id != referral[
-                "from_hospital_id"
-            ]:
-                raise HTTPException(
-                    status_code=403,
-                    detail=(
-                        "Only the source hospital can mark "
-                        "this referral as in transit."
-                    )
-                )
-
-        # Destination hospital:
-        # ARRIVED onwards
+            detail = "Only the source hospital can mark this referral as in transit."
         else:
-
-            if hospital_id != referral[
-                "to_hospital_id"
-            ]:
-                raise HTTPException(
-                    status_code=403,
-                    detail=(
-                        "Only the destination hospital "
-                        "can update this referral status."
-                    )
-                )
+            detail = "Only the destination hospital can update this referral status."
+        raise HTTPException(
+            status_code=403,
+            detail=detail,
+        )
 
     # ----------------------------------------
     # Update referral status
     # ----------------------------------------
 
     result = update_referral_status(
-        referral_id,
-        new_status
+        referral_id=referral_id,
+        new_status=new_status,
+        notes=body.notes if body else None,
+        ambulance_id=body.ambulance_id if body else None,
+        eta_minutes=body.eta_minutes if body else None,
+        user_id=current_user.get("user_id"),
     )
 
     if not result["success"]:
@@ -1439,7 +1658,74 @@ def update_live_referral_status(
             detail=result,
         )
 
-    return result
+    # ----------------------------------------
+    # Include reservation details in response
+    # ----------------------------------------
+
+    response = dict(result)
+
+    referral_data = result.get("referral", {})
+
+    response["reservation"] = {
+        "reservation_status": referral_data.get(
+            "reservation_status"
+        ),
+        "bed_id": referral_data.get("bed_id"),
+        "bed_type": referral_data.get("bed_type"),
+        "reservation_hospital_id": referral_data.get(
+            "reservation_hospital_id"
+        ),
+        "auto_reservation": referral_data.get(
+            "auto_reservation"
+        ),
+        "reservation_message": referral_data.get(
+            "reservation_message"
+        ),
+    }
+
+    return response
+
+
+# ============================================================
+# IN-APP NOTIFICATIONS
+# ============================================================
+
+@app.get("/hospitals/{hospital_id}/notifications")
+def get_notifications_endpoint(
+    hospital_id: str,
+    unread_only: bool = Query(default=False),
+    limit: int = Query(default=50, ge=1, le=100),
+    current_user: dict = Depends(require_current_user),
+):
+    if not can_access_hospital(current_user, hospital_id):
+        raise HTTPException(status_code=403, detail="Unauthorized to view notifications for this hospital.")
+    from src.prediction.notification_store import get_hospital_notifications
+    return get_hospital_notifications(hospital_id, unread_only=unread_only, limit=limit)
+
+
+@app.post("/hospitals/{hospital_id}/notifications/{notification_id}/read")
+def mark_notification_read_endpoint(
+    hospital_id: str,
+    notification_id: int,
+    current_user: dict = Depends(require_current_user),
+):
+    if not can_access_hospital(current_user, hospital_id):
+        raise HTTPException(status_code=403, detail="Unauthorized.")
+    from src.prediction.notification_store import mark_notification_as_read
+    success = mark_notification_as_read(notification_id, hospital_id)
+    return {"success": success}
+
+
+@app.post("/hospitals/{hospital_id}/notifications/read-all")
+def mark_all_notifications_read_endpoint(
+    hospital_id: str,
+    current_user: dict = Depends(require_current_user),
+):
+    if not can_access_hospital(current_user, hospital_id):
+        raise HTTPException(status_code=403, detail="Unauthorized.")
+    from src.prediction.notification_store import mark_all_notifications_read
+    count = mark_all_notifications_read(hospital_id)
+    return {"success": True, "marked_read": count}
 
 
 # ============================================================

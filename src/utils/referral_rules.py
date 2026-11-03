@@ -168,7 +168,7 @@ def check_test_availability(patient, hospital):
             unavailable_tests.append(test)
             continue
 
-        if hospital.get(hospital_column) != "Yes":
+        if hospital.get(hospital_column) not in ("Yes", 1, True):
             unavailable_tests.append(test)
 
     return {
@@ -188,7 +188,7 @@ def check_specialty_availability(patient, hospital):
     medical specialty.
     """
 
-    disease = patient["disease"]
+    disease = patient.get("disease") or "general_medicine"
 
     required_specialties = DISEASE_SPECIALTY.get(
         disease,
@@ -199,7 +199,7 @@ def check_specialty_availability(patient, hospital):
 
     for specialty in required_specialties:
 
-        if hospital.get(specialty) != "Yes":
+        if hospital.get(specialty) not in ("Yes", 1, True):
             unavailable_specialties.append(
                 specialty
             )
@@ -217,21 +217,20 @@ def check_specialty_availability(patient, hospital):
 # Check Bed Availability
 # ----------------------------------------
 
-def check_bed_availability(patient, hospital):
+def check_bed_availability(patient, hospital, bed_type=None):
     """
     Check whether hospital has an appropriate
     bed for the patient.
     """
+    target_bed = bed_type or patient.get("bed_type")
 
-    if patient["icu_required"] == "Yes":
+    if target_bed == "ICU" or patient.get("icu_required") == "Yes":
+        return (hospital.get("available_icu_beds") or 0) > 0
 
-        return hospital["available_icu_beds"] > 0
+    if target_bed == "EMERGENCY" or patient.get("priority") == "Critical":
+        return (hospital.get("available_emergency_beds") or 0) > 0
 
-    if patient["priority"] == "Critical":
-
-        return hospital["available_emergency_beds"] > 0
-
-    return hospital["available_beds"] > 0
+    return (hospital.get("available_beds") or 0) > 0
 
 
 # ----------------------------------------
@@ -244,7 +243,10 @@ def check_hospital_eligibility(patient, hospital):
     for patient referral.
     """
 
-    if hospital["accepts_referral"] != "Yes":
+    if hospital.get("is_active") is False or hospital.get("status") in ("INACTIVE", "DECOMMISSIONED", "CLOSED"):
+        return False
+
+    if hospital.get("accepts_referral") not in ("Yes", 1, True):
         return False
 
     test_result = check_test_availability(
@@ -277,7 +279,8 @@ def check_hospital_eligibility(patient, hospital):
 
 def evaluate_hospital_capability(
     patient,
-    hospital
+    hospital,
+    bed_type=None
 ):
     """
     Detailed hospital capability assessment.
@@ -294,10 +297,15 @@ def evaluate_hospital_capability(
     warnings = []
 
     # --------------------------------
-    # Referral acceptance
+    # Referral acceptance & Active Status
     # --------------------------------
 
-    if hospital["accepts_referral"] != "Yes":
+    if hospital.get("is_active") is False or hospital.get("status") in ("INACTIVE", "DECOMMISSIONED", "CLOSED"):
+        hard_blocks.append(
+            "Hospital facility is inactive or decommissioned"
+        )
+
+    if hospital.get("accepts_referral") not in ("Yes", 1, True):
 
         hard_blocks.append(
             "Hospital does not accept referrals"
@@ -349,55 +357,65 @@ def evaluate_hospital_capability(
             )
         )
 
+    target_bed = bed_type or patient.get("bed_type")
+
     # --------------------------------
-    # ICU
+    # ICU Bed Requirement
     # --------------------------------
 
-    if patient["icu_required"] == "Yes":
+    if target_bed == "ICU" or patient.get("icu_required") == "Yes":
 
-        if hospital["available_icu_beds"] <= 0:
+        if (hospital.get("available_icu_beds") or 0) <= 0:
 
             hard_blocks.append(
                 "ICU bed unavailable"
             )
 
     # --------------------------------
-    # Critical Patient
+    # Critical / Emergency Bed Requirement
     # --------------------------------
 
-    if patient["priority"] == "Critical":
+    elif target_bed == "EMERGENCY" or patient.get("priority") == "Critical":
 
         # Critical cases require emergency support
-        if hospital["emergency_24x7"] != "Yes":
+        if hospital.get("emergency_24x7") not in ("Yes", 1, True):
 
             hard_blocks.append(
                 "24x7 emergency service unavailable"
             )
 
         # Emergency bed
-        if hospital[
-            "available_emergency_beds"
-        ] <= 0:
+        if (hospital.get("available_emergency_beds") or 0) <= 0:
 
             hard_blocks.append(
                 "Emergency bed unavailable"
             )
 
     # --------------------------------
-    # Oxygen warning
+    # General Inpatient Bed Requirement
+    # --------------------------------
+
+    else:
+
+        if (hospital.get("available_beds") or 0) <= 0:
+
+            hard_blocks.append(
+                "General bed unavailable"
+            )
+
+    # --------------------------------
+    # Oxygen warning / requirement
     # --------------------------------
 
     try:
 
         spo2 = float(
-            patient["spo2"]
+            patient.get("spo2")
         )
 
         if spo2 < 94:
 
-            if hospital[
-                "oxygen_support"
-            ] != "Yes":
+            if hospital.get("oxygen_support") not in ("Yes", 1, True):
 
                 hard_blocks.append(
                     "Oxygen support unavailable"
@@ -415,9 +433,9 @@ def evaluate_hospital_capability(
     # Ventilator warning / capability
     # --------------------------------
 
-    if patient["priority"] == "Critical":
+    if patient.get("priority") == "Critical":
 
-        if hospital["ventilator"] != "Yes":
+        if hospital.get("ventilator") not in ("Yes", 1, True):
 
             warnings.append(
                 "Ventilator support unavailable"
@@ -431,7 +449,7 @@ def evaluate_hospital_capability(
         "ambulance_required"
     ) == "Yes":
 
-        if hospital["ambulance"] != "Yes":
+        if hospital.get("ambulance") not in ("Yes", 1, True):
 
             warnings.append(
                 "Hospital ambulance unavailable"

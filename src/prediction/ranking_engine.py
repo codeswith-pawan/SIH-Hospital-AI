@@ -41,6 +41,15 @@ def calculate_hospital_score(
 
     score = 0.0
 
+    def get_val(key, default=None):
+        if hasattr(hospital, "get"):
+            v = hospital.get(key, default)
+            return default if v is None else v
+        if key in hospital:
+            v = hospital[key]
+            return default if v is None else v
+        return default
+
     # ==================================================
     # CRITICAL
     # ==================================================
@@ -48,7 +57,7 @@ def calculate_hospital_score(
     if priority == "Critical":
 
         # ICU — 30
-        icu_beds = hospital["available_icu_beds"]
+        icu_beds = get_val("available_icu_beds", 0)
 
         if icu_beds >= 30:
             score += 30
@@ -60,7 +69,7 @@ def calculate_hospital_score(
             score += 18
 
         # Distance — 25
-        distance = hospital["distance_km"]
+        distance = get_val("distance_km", 50.0)
 
         if distance <= 5:
             score += 25
@@ -76,30 +85,30 @@ def calculate_hospital_score(
             score += 3
 
         # Emergency — 15
-        if hospital["emergency_24x7"] == "Yes":
+        if get_val("emergency_24x7") in ("Yes", 1, True):
             score += 15
 
         # Ambulance — 10
-        if hospital["ambulance"] == "Yes":
+        if get_val("ambulance") in ("Yes", 1, True):
             score += 10
 
         # Oxygen — 5
-        if hospital["oxygen_support"] == "Yes":
+        if get_val("oxygen_support") in ("Yes", 1, True):
             score += 5
 
         # Ventilator — 5
-        if hospital["ventilator"] == "Yes":
+        if get_val("ventilator") in ("Yes", 1, True):
             score += 5
 
         # Blood Bank — 5
-        if hospital["blood_bank"] == "Yes":
+        if get_val("blood_bank") in ("Yes", 1, True):
             score += 5
 
         # Specialty/Test match — 5
-        if hospital["specialty_match"] == 1:
+        if get_val("specialty_match") == 1:
             score += 2.5
 
-        if hospital["test_match"] == 1:
+        if get_val("test_match") == 1:
             score += 2.5
 
     # ==================================================
@@ -109,7 +118,7 @@ def calculate_hospital_score(
     elif priority == "Urgent":
 
         # Distance — 30
-        distance = hospital["distance_km"]
+        distance = get_val("distance_km", 50.0)
 
         if distance <= 5:
             score += 30
@@ -125,7 +134,7 @@ def calculate_hospital_score(
             score += 4
 
         # Beds — 25
-        beds = hospital["available_beds"]
+        beds = get_val("available_beds", 0)
 
         if beds >= 300:
             score += 25
@@ -139,7 +148,7 @@ def calculate_hospital_score(
             score += 6
 
         # ICU — 15
-        icu_beds = hospital["available_icu_beds"]
+        icu_beds = get_val("available_icu_beds", 0)
 
         if icu_beds >= 30:
             score += 15
@@ -151,30 +160,30 @@ def calculate_hospital_score(
             score += 7
 
         # Emergency — 10
-        if hospital["emergency_24x7"] == "Yes":
+        if get_val("emergency_24x7") in ("Yes", 1, True):
             score += 10
 
         # Ambulance — 5
-        if hospital["ambulance"] == "Yes":
+        if get_val("ambulance") in ("Yes", 1, True):
             score += 5
 
         # Oxygen — 5
-        if hospital["oxygen_support"] == "Yes":
+        if get_val("oxygen_support") in ("Yes", 1, True):
             score += 5
 
         # Ventilator — 3
-        if hospital["ventilator"] == "Yes":
+        if get_val("ventilator") in ("Yes", 1, True):
             score += 3
 
         # Blood bank — 2
-        if hospital["blood_bank"] == "Yes":
+        if get_val("blood_bank") in ("Yes", 1, True):
             score += 2
 
         # Specialty/Test
-        if hospital["specialty_match"] == 1:
+        if get_val("specialty_match") == 1:
             score += 1.5
 
-        if hospital["test_match"] == 1:
+        if get_val("test_match") == 1:
             score += 1.5
 
     # ==================================================
@@ -184,7 +193,7 @@ def calculate_hospital_score(
     else:
 
         # Distance — 35
-        distance = hospital["distance_km"]
+        distance = get_val("distance_km", 50.0)
 
         if distance <= 5:
             score += 35
@@ -200,7 +209,7 @@ def calculate_hospital_score(
             score += 6
 
         # Beds — 30
-        beds = hospital["available_beds"]
+        beds = get_val("available_beds", 0)
 
         if beds >= 300:
             score += 30
@@ -214,7 +223,7 @@ def calculate_hospital_score(
             score += 8
 
         # ICU — 10
-        icu_beds = hospital["available_icu_beds"]
+        icu_beds = get_val("available_icu_beds", 0)
 
         if icu_beds >= 30:
             score += 10
@@ -226,30 +235,30 @@ def calculate_hospital_score(
             score += 4
 
         # Emergency — 10
-        if hospital["emergency_24x7"] == "Yes":
+        if get_val("emergency_24x7") in ("Yes", 1, True):
             score += 10
 
         # Ambulance — 5
-        if hospital["ambulance"] == "Yes":
+        if get_val("ambulance") in ("Yes", 1, True):
             score += 5
 
         # Oxygen — 5
-        if hospital["oxygen_support"] == "Yes":
+        if get_val("oxygen_support") in ("Yes", 1, True):
             score += 5
 
         # Ventilator — 3
-        if hospital["ventilator"] == "Yes":
+        if get_val("ventilator") in ("Yes", 1, True):
             score += 3
 
         # Blood bank — 2
-        if hospital["blood_bank"] == "Yes":
+        if get_val("blood_bank") in ("Yes", 1, True):
             score += 2
 
         # Specialty/Test
-        if hospital["specialty_match"] == 1:
+        if get_val("specialty_match") == 1:
             score += 1
 
-        if hospital["test_match"] == 1:
+        if get_val("test_match") == 1:
             score += 1
 
     return round(min(score, 100), 2)
@@ -274,6 +283,16 @@ def rank_hospitals(
         return hospitals
 
     result = hospitals.copy()
+
+    # Ensure required ranking columns exist with safe defaults
+    if "distance_km" not in result.columns:
+        result["distance_km"] = 50.0
+    if "success_probability" not in result.columns:
+        result["success_probability"] = 0.5
+    if "available_beds" not in result.columns:
+        result["available_beds"] = 0
+    if "available_icu_beds" not in result.columns:
+        result["available_icu_beds"] = 0
 
     # ----------------------------------------------
     # Distance Zone

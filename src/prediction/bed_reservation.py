@@ -40,22 +40,24 @@ RESERVATION_LOCK = Lock()
 def initialize_hospital_beds(
     hospital_id,
     available_beds,
-    available_icu_beds
+    available_icu_beds,
+    reset=False,
 ):
     """
     Create or load persistent hospital bed inventory.
     """
 
-    # Check existing persistent inventory
-    existing = get_hospital_inventory(
-        hospital_id
-    )
+    if not reset:
+        # Check existing persistent inventory
+        existing = get_hospital_inventory(
+            hospital_id
+        )
 
-    # If inventory already exists,
-    # return the existing live inventory
-    if existing is not None:
+        # If inventory already exists,
+        # return the existing live inventory
+        if existing is not None:
 
-        return existing
+            return existing
 
     # ========================================================
     # Create physical beds
@@ -120,8 +122,16 @@ def reserve_bed(
     Assigns a real physical bed number
     such as GENERAL-001 or ICU-004.
     """
+    passed_inventory = inventory
 
     with RESERVATION_LOCK:
+
+        # ----------------------------------------
+        # Always refresh live persistent inventory under lock
+        # ----------------------------------------
+        live_inv = get_hospital_inventory(hospital_id)
+        if live_inv is not None:
+            inventory = live_inv
 
         # ----------------------------------------
         # Validate bed type
@@ -231,65 +241,44 @@ def reserve_bed(
                 )
             }
 
+        
+        # ----------------------------------------
+        # Validate aggregate capacity first
+        # ----------------------------------------
+
+        if bed_type == "ICU":
+            if inventory["available_icu_beds"] <= 0:
+                return {
+                    "success": False,
+                    "status": "NO_ICU_AVAILABLE",
+                    "message": "No ICU bed available."
+                }
+        else:
+            if inventory["available_beds"] <= 0:
+                return {
+                    "success": False,
+                    "status": "NO_BED_AVAILABLE",
+                    "message": "No general bed available."
+                }
+
         # ----------------------------------------
         # Update physical bed
         # ----------------------------------------
 
-        beds[
-            assigned_bed_id
-        ] = "RESERVED"
-
-        inventory[
-            "beds"
-        ] = beds
+        beds[assigned_bed_id] = "RESERVED"
+        inventory["beds"] = beds
 
         # ----------------------------------------
         # Update aggregate inventory
         # ----------------------------------------
 
         if bed_type == "ICU":
-
-            if inventory[
-                "available_icu_beds"
-            ] <= 0:
-
-                return {
-                    "success": False,
-                    "status": "NO_ICU_AVAILABLE",
-                    "message": (
-                        "No ICU bed available."
-                    )
-                }
-
-            inventory[
-                "available_icu_beds"
-            ] -= 1
-
-            inventory[
-                "reserved_icu_beds"
-            ] += 1
-
+            inventory["available_icu_beds"] -= 1
+            inventory["reserved_icu_beds"] += 1
         else:
+            inventory["available_beds"] -= 1
+            inventory["reserved_beds"] += 1
 
-            if inventory[
-                "available_beds"
-            ] <= 0:
-
-                return {
-                    "success": False,
-                    "status": "NO_BED_AVAILABLE",
-                    "message": (
-                        "No general bed available."
-                    )
-                }
-
-            inventory[
-                "available_beds"
-            ] -= 1
-
-            inventory[
-                "reserved_beds"
-            ] += 1
 
         # ----------------------------------------
         # Persist inventory
@@ -298,6 +287,10 @@ def reserve_bed(
         save_hospital_inventory(
             inventory
         )
+
+        if passed_inventory is not None and passed_inventory is not inventory:
+            passed_inventory.clear()
+            passed_inventory.update(inventory)
 
         # ----------------------------------------
         # Create reservation
@@ -514,8 +507,13 @@ def release_bed(
     OCCUPIED beds must be handled through
     the discharge process.
     """
+    passed_inventory = inventory
 
     with RESERVATION_LOCK:
+
+        live_inv = get_hospital_inventory(hospital_id)
+        if live_inv is not None:
+            inventory = live_inv
 
         # ----------------------------------------
         # Load persistent reservations
@@ -576,16 +574,16 @@ def release_bed(
             }
 
         # ----------------------------------------
-        # Only RESERVED can be released
+        # Only RESERVED or CONFIRMED can be released
         # ----------------------------------------
 
-        if reservation["status"] != RESERVED:
+        if reservation["status"] not in [RESERVED, CONFIRMED]:
 
             return {
                 "success": False,
                 "status": "INVALID_STATUS",
                 "message": (
-                    "Only a reserved bed can be released."
+                    "Only a reserved or confirmed bed can be released."
                 ),
                 "current_status": reservation["status"]
             }
@@ -691,6 +689,10 @@ def release_bed(
             inventory
         )
 
+        if passed_inventory is not None and passed_inventory is not inventory:
+            passed_inventory.clear()
+            passed_inventory.update(inventory)
+
         # ----------------------------------------
         # Persist updated reservation
         # ----------------------------------------
@@ -727,8 +729,13 @@ def discharge_patient(
 
     OCCUPIED -> RELEASED
     """
+    passed_inventory = inventory
 
     with RESERVATION_LOCK:
+
+        live_inv = get_hospital_inventory(hospital_id)
+        if live_inv is not None:
+            inventory = live_inv
 
         # ----------------------------------------
         # Load persistent reservations
@@ -888,6 +895,10 @@ def discharge_patient(
             inventory
         )
 
+        if passed_inventory is not None and passed_inventory is not inventory:
+            passed_inventory.clear()
+            passed_inventory.update(inventory)
+
         # ----------------------------------------
         # Persist reservation
         # ----------------------------------------
@@ -945,8 +956,13 @@ def expire_reservation(
     Expire an unconfirmed reservation
     after the configured timeout.
     """
+    passed_inventory = inventory
 
     with RESERVATION_LOCK:
+
+        live_inv = get_hospital_inventory(hospital_id)
+        if live_inv is not None:
+            inventory = live_inv
 
         reservations = load_reservations()
 
@@ -1084,6 +1100,10 @@ def expire_reservation(
         save_hospital_inventory(
             inventory
         )
+
+        if passed_inventory is not None and passed_inventory is not inventory:
+            passed_inventory.clear()
+            passed_inventory.update(inventory)
 
         save_reservation(
             reservation
@@ -1242,6 +1262,10 @@ def cleanup_expired_reservations(
         save_hospital_inventory(
             inventory
         )
+
+        if passed_inventory is not None and passed_inventory is not inventory:
+            passed_inventory.clear()
+            passed_inventory.update(inventory)
 
         save_reservation(
             reservation

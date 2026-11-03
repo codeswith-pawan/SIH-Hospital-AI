@@ -5,7 +5,10 @@ Patient management API routes.
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
+from src.auth.dependencies import require_current_user
+from src.auth.authorization import can_access_hospital, can_access_patient
 from src.database.database import get_db
+from src.database.models import HospitalVisit
 
 from src.database.patient_service import (
     get_patient,
@@ -152,8 +155,15 @@ def get_hospital_patient_list(
     status: str | None = None,
     priority: str | None = None,
     icu_required: str | None = None,
+    current_user: dict = Depends(require_current_user),
     db: Session = Depends(get_db),
 ):
+    if not can_access_hospital(current_user, hospital_id):
+        raise HTTPException(
+            status_code=403,
+            detail="Access denied: unauthorized hospital jurisdiction.",
+        )
+
     allowed_statuses = [
         "NEW",
         "ACTIVE",
@@ -248,8 +258,15 @@ def get_hospital_patient_list(
 @router.get("/hospital/{hospital_id}/summary")
 def get_hospital_summary(
     hospital_id: str,
+    current_user: dict = Depends(require_current_user),
     db: Session = Depends(get_db),
 ):
+    if not can_access_hospital(current_user, hospital_id):
+        raise HTTPException(
+            status_code=403,
+            detail="Access denied: unauthorized hospital jurisdiction.",
+        )
+
     summary = get_hospital_patient_summary(
         db=db,
         hospital_id=hospital_id,
@@ -269,8 +286,15 @@ def get_hospital_summary(
 def admit_patient(
     patient_id: str,
     hospital_id: str,
+    current_user: dict = Depends(require_current_user),
     db: Session = Depends(get_db),
 ):
+    if not can_access_hospital(current_user, hospital_id):
+        raise HTTPException(
+            status_code=403,
+            detail="Access denied: unauthorized hospital jurisdiction.",
+        )
+
     patient = get_patient(
         db=db,
         patient_id=patient_id,
@@ -330,6 +354,7 @@ def admit_patient(
 @router.get("/{patient_id}")
 def get_patient_details(
     patient_id: str,
+    current_user: dict = Depends(require_current_user),
     db: Session = Depends(get_db),
 ):
     patient = get_patient(
@@ -341,6 +366,12 @@ def get_patient_details(
         raise HTTPException(
             status_code=404,
             detail="Patient not found.",
+        )
+
+    if not can_access_patient(current_user, patient_id, db):
+        raise HTTPException(
+            status_code=403,
+            detail="Access denied: patient records outside your hospital jurisdiction.",
         )
 
     visits = get_patient_visits(
@@ -384,6 +415,7 @@ def get_patient_details(
 def update_patient_visit_status(
     visit_id: int,
     status: str,
+    current_user: dict = Depends(require_current_user),
     db: Session = Depends(get_db),
 ):
     allowed_statuses = [
@@ -403,6 +435,19 @@ def update_patient_visit_status(
             ),
         )
 
+    visit_record = db.query(HospitalVisit).filter(HospitalVisit.id == visit_id).first()
+    if visit_record is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Hospital visit not found.",
+        )
+
+    if not can_access_hospital(current_user, visit_record.hospital_id):
+        raise HTTPException(
+            status_code=403,
+            detail="Access denied: unauthorized hospital jurisdiction.",
+        )
+
     try:
         visit = update_visit_status(
             db=db,
@@ -413,12 +458,6 @@ def update_patient_visit_status(
         raise HTTPException(
             status_code=400,
             detail=str(error),
-        )
-
-    if visit is None:
-        raise HTTPException(
-            status_code=404,
-            detail="Hospital visit not found.",
         )
 
     return {
@@ -445,6 +484,7 @@ def update_patient_visit_status(
 def update_patient_visit_notes(
     visit_id: int,
     notes: str,
+    current_user: dict = Depends(require_current_user),
     db: Session = Depends(get_db),
 ):
     if not notes.strip():
@@ -453,17 +493,24 @@ def update_patient_visit_notes(
             detail="Notes cannot be empty.",
         )
 
+    visit_record = db.query(HospitalVisit).filter(HospitalVisit.id == visit_id).first()
+    if visit_record is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Hospital visit not found.",
+        )
+
+    if not can_access_hospital(current_user, visit_record.hospital_id):
+        raise HTTPException(
+            status_code=403,
+            detail="Access denied: unauthorized hospital jurisdiction.",
+        )
+
     visit = update_visit_notes(
         db=db,
         visit_id=visit_id,
         notes=notes.strip(),
     )
-
-    if visit is None:
-        raise HTTPException(
-            status_code=404,
-            detail="Hospital visit not found.",
-        )
 
     return {
         "success": True,

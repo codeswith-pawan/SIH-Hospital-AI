@@ -1,52 +1,106 @@
-import os
-from datetime import datetime, timedelta, timezone
+"""
+JWT Utility Functions
+AI Powered Smart Hospital Referral System - Phase 17
+"""
 
+import os
+import logging
+from datetime import datetime, timedelta, timezone
+from typing import Optional
 import jwt
 
+from src.auth.rate_limiter import is_token_revoked
 
-SECRET_KEY = os.getenv(
-    "SIH_JWT_SECRET",
-    "sih-hospital-ai-demo-secret-change-later"
-)
+logger = logging.getLogger(__name__)
 
+INSECURE_DEV_SECRET = "sih-hospital-ai-demo-secret-change-later"
 ALGORITHM = "HS256"
-
 ACCESS_TOKEN_EXPIRE_MINUTES = 60
 
 
-def create_access_token(user):
+def get_jwt_secret() -> str:
+    """
+    Validate and return the JWT secret key.
+    Enforces that production and staging environments MUST have a secure,
+    non-default SIH_JWT_SECRET environment variable of at least 32 characters.
+    In development mode, a clearly separated dev secret is allowed with a warning.
+    """
+    env = os.getenv("SIH_ENV", os.getenv("ENVIRONMENT", "development")).lower().strip()
+    secret = os.getenv("SIH_JWT_SECRET", "").strip()
+
+    is_production = env in ("production", "prod", "staging")
+
+    if is_production:
+        if not secret or secret == INSECURE_DEV_SECRET or len(secret) < 32:
+            raise RuntimeError(
+                "CRITICAL SECURITY CONFIGURATION ERROR: SIH_JWT_SECRET must be set to a strong, "
+                "unique key (minimum 32 characters) in production/staging environments. "
+                "Using the insecure development fallback secret is strictly prohibited in production."
+            )
+        return secret
+
+    # Development mode fallback
+    if not secret:
+        return INSECURE_DEV_SECRET
+    return secret
+
+
+def validate_production_security_config():
+    """Startup check: fails application initialization if configuration is insecure in production."""
+    get_jwt_secret()
+
+
+def create_access_token(user: dict) -> str:
+    """Create a signed JWT access token."""
     now = datetime.now(timezone.utc)
+    secret_key = get_jwt_secret()
 
     payload = {
-        "sub": user["user_id"],
-        "username": user["username"],
-        "role": user["role"],
+        "sub": user.get("user_id"),
+        "user_id": user.get("user_id"),
+        "username": user.get("username"),
+        "role": user.get("role"),
         "hospital_id": user.get("hospital_id"),
         "state": user.get("state"),
         "district": user.get("district"),
         "iat": now,
-        "exp": now + timedelta(
-            minutes=ACCESS_TOKEN_EXPIRE_MINUTES
-        ),
+        "exp": now + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES),
     }
 
     return jwt.encode(
         payload,
-        SECRET_KEY,
-        algorithm=ALGORITHM
+        secret_key,
+        algorithm=ALGORITHM,
     )
 
 
-def decode_access_token(token):
-    try:
-        return jwt.decode(
-            token,
-            SECRET_KEY,
-            algorithms=[ALGORITHM]
-        )
-
-    except jwt.ExpiredSignatureError:
+def decode_access_token(token: str, check_revocation: bool = True) -> Optional[dict]:
+    """
+    Verify and decode a signed JWT access token.
+    Enforces algorithm HS256, verifies signature, expiration, and checks distributed revocation blocklist.
+    """
+    if not token or not isinstance(token, str):
         return None
 
-    except jwt.InvalidTokenError:
+    # Check revocation blocklist first
+    if check_revocation and is_token_revoked(token):
+        logger.warning("Rejected attempt to use revoked JWT.")
+        return None
+
+    try:
+        secret_key = get_jwt_secret()
+        return jwt.decode(
+            token,
+            secret_key,
+            algorithms=[ALGORITHM],
+            options={"require": ["exp", "sub"]},
+        )
+    except jwt.ExpiredSignatureError:
+        logger.debug("JWT validation failed: signature expired.")
+        return None
+    except jwt.InvalidTokenError as e:
+        logger.debug("JWT validation failed: invalid token (%s).", e)
+        return None
+    except Exception as e:
+        logger.warning("Unexpected error decoding JWT: %s", e)
         return None

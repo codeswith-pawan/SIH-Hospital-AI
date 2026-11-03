@@ -8,7 +8,9 @@ import os
 from threading import Lock
 
 
-STORE_PATH = "data/reservations.json"
+def get_store_path():
+    return os.getenv("SIH_RESERVATIONS_PATH", "data/reservations.json")
+
 
 STORE_LOCK = Lock()
 
@@ -17,8 +19,8 @@ def ensure_store():
     """
     Create reservation storage if it does not exist.
     """
-
-    directory = os.path.dirname(STORE_PATH)
+    store_path = get_store_path()
+    directory = os.path.dirname(store_path)
 
     if directory:
         os.makedirs(
@@ -26,10 +28,10 @@ def ensure_store():
             exist_ok=True
         )
 
-    if not os.path.exists(STORE_PATH):
+    if not os.path.exists(store_path):
 
         with open(
-            STORE_PATH,
+            store_path,
             "w"
         ) as file:
 
@@ -50,7 +52,7 @@ def load_reservations():
     with STORE_LOCK:
 
         with open(
-            STORE_PATH,
+            get_store_path(),
             "r"
         ) as file:
 
@@ -66,10 +68,12 @@ def save_reservations(
 
     ensure_store()
 
+    store_path = get_store_path()
+
     with STORE_LOCK:
 
         temp_path = (
-            STORE_PATH + ".tmp"
+            store_path + ".tmp"
         )
 
         with open(
@@ -85,7 +89,7 @@ def save_reservations(
 
         os.replace(
             temp_path,
-            STORE_PATH
+            store_path
         )
 
 
@@ -143,16 +147,17 @@ def get_all_reservations():
 # Persistent Bed Inventory
 # ============================================================
 
-INVENTORY_PATH = "data/bed_inventory.json"
+def get_inventory_path():
+    return os.getenv("SIH_BED_INVENTORY_PATH", "data/bed_inventory.json")
 
 
 def ensure_inventory_store():
     """
     Create bed inventory storage if it does not exist.
     """
-
+    inventory_path = get_inventory_path()
     directory = os.path.dirname(
-        INVENTORY_PATH
+        inventory_path
     )
 
     if directory:
@@ -162,11 +167,11 @@ def ensure_inventory_store():
         )
 
     if not os.path.exists(
-        INVENTORY_PATH
+        inventory_path
     ):
 
         with open(
-            INVENTORY_PATH,
+            inventory_path,
             "w"
         ) as file:
 
@@ -187,7 +192,7 @@ def load_bed_inventory():
     with STORE_LOCK:
 
         with open(
-            INVENTORY_PATH,
+            get_inventory_path(),
             "r"
         ) as file:
 
@@ -203,10 +208,12 @@ def save_bed_inventory(
 
     ensure_inventory_store()
 
+    inventory_path = get_inventory_path()
+
     with STORE_LOCK:
 
         temp_path = (
-            INVENTORY_PATH + ".tmp"
+            inventory_path + ".tmp"
         )
 
         with open(
@@ -222,7 +229,7 @@ def save_bed_inventory(
 
         os.replace(
             temp_path,
-            INVENTORY_PATH
+            inventory_path
         )
 
 
@@ -305,6 +312,25 @@ def get_hospital_inventory(
     inventory["reserved_icu_beds"] = sum(
         status == "RESERVED"
         for status in icu_beds.values()
+    )
+
+    # Explicit semantic counters for UI and API consumers
+    inventory["available_general_beds"] = inventory["available_beds"]
+    inventory["reserved_general_beds"] = inventory["reserved_beds"]
+    inventory["total_general_beds"] = (
+        inventory["available_general_beds"] + inventory["reserved_general_beds"]
+    )
+    inventory["total_icu_beds"] = (
+        inventory["available_icu_beds"] + inventory["reserved_icu_beds"]
+    )
+    inventory["total_available_beds"] = (
+        inventory["available_beds"] + inventory["available_icu_beds"]
+    )
+    inventory["total_reserved_beds"] = (
+        inventory["reserved_beds"] + inventory["reserved_icu_beds"]
+    )
+    inventory["total_capacity"] = (
+        inventory["total_available_beds"] + inventory["total_reserved_beds"]
     )
 
     return inventory

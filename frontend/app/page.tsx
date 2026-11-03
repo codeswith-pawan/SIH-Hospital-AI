@@ -1,166 +1,138 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import HospitalDashboard from "@/components/HospitalDashboard";
+import DistrictDashboard from "@/components/DistrictDashboard";
+import StateDashboard from "@/components/StateDashboard";
+import CentralDashboard from "@/components/CentralDashboard";
+import { User, Referral } from "@/lib/types";
+import {
+  apiLogin,
+  apiGetRecommendations,
+  apiGetPatientReferrals,
+  getStoredUser,
+  setStoredSession,
+  clearStoredSession,
+} from "@/lib/api";
+import {
+  formatDistance,
+  formatModelFitScore,
+} from "@/lib/formatters";
+import { StatusBadge, PriorityBadge } from "@/components/shared/StatusBadge";
+import { ReferralTimeline } from "@/components/shared/ReferralTimeline";
+import { LoadingState, ErrorState } from "@/components/shared/LoadingAndErrorStates";
+import { EmptyState } from "@/components/shared/EmptyState";
 
-type User = {
-  user_id: string;
-  username: string;
-  name: string;
-  role: string;
-  hospital_id?: string | null;
-  state?: string | null;
-  district?: string | null;
-};
-
-type Hospital = {
-  hospital_id: string;
-  hospital_name: string;
-  state: string;
-  district: string;
-  city: string;
-  distance_km: number;
-  available_beds: number;
-  available_icu_beds: number;
-  success_probability: number;
-  final_score: number;
-  recommendation_type: string;
-  rank: number;
-  specialty_match: number;
-  test_match: number;
-  bed_match: number;
-  icu_match: number;
-};
-
-type ApiResponse = {
-  success: boolean;
-  patient_id: string;
-  priority: string;
-  total_hospitals: number;
-  hospitals: Hospital[];
-};
-
-type Referral = {
-  referral_id: string;
-  patient_id: string;
-  from_hospital_id: string;
-  to_hospital_id: string;
-  reason: string;
-  priority: string;
-  status: string;
-  created_at: string;
-  accepted_at?: string | null;
-  rejected_at?: string | null;
-  in_transit_at?: string | null;
-  arrived_at?: string | null;
-  treatment_started_at?: string | null;
-  completed_at?: string | null;
-  transferred_at?: string | null;
-  died_at?: string | null;
-  closed_at?: string | null;
-  reservation_hospital_id?: string;
-  bed_type?: string;
-  reservation_release_status?: string;
-};
-
-type ReferralResponse = {
-  success: boolean;
-  referral: Referral;
-};
-
-type ReferralHistoryResponse = {
-  success: boolean;
-  patient_id: string;
-  total_referrals: number;
-  referrals: Referral[];
-};
+const DEMO_ACCOUNTS = [
+  {
+    roleLabel: "Hospital Staff",
+    username: "gh00046",
+    password: "hospital123",
+    desc: "Amritsar Medical College Hospital",
+    badge: "Hospital Tier",
+    color: "border-blue-500/30 text-blue-300",
+  },
+  {
+    roleLabel: "District Admin",
+    username: "amritsar_district_admin",
+    password: "district123",
+    desc: "Amritsar District Health Office",
+    badge: "District Tier",
+    color: "border-indigo-500/30 text-indigo-300",
+  },
+  {
+    roleLabel: "State Admin",
+    username: "punjab_admin",
+    password: "admin123",
+    desc: "Punjab State Health Directorate",
+    badge: "State Tier",
+    color: "border-teal-500/30 text-teal-300",
+  },
+  {
+    roleLabel: "Central Admin",
+    username: "central_admin",
+    password: "central123",
+    desc: "National Hospital Coordination",
+    badge: "National Tier",
+    color: "border-purple-500/30 text-purple-300",
+  },
+];
 
 export default function Home() {
   const [user, setUser] = useState<User | null>(null);
+  const [mounted, setMounted] = useState(false);
 
+  // Login Form
   const [loginUsername, setLoginUsername] = useState("gh00046");
   const [loginPassword, setLoginPassword] = useState("hospital123");
   const [loginLoading, setLoginLoading] = useState(false);
   const [loginError, setLoginError] = useState("");
 
-  const login = async () => {
+  // Emergency Triage / Recommendation Engine
+  const [patientId, setPatientId] = useState("PAT000002");
+  const [data, setData] = useState<any | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+
+  // Reservation from Triage
+  const [reservationLoading, setReservationLoading] = useState(false);
+  const [reservationHospitalId, setReservationHospitalId] = useState<string | null>(null);
+  const [reservation, setReservation] = useState<any>(null);
+  const [reservationError, setReservationError] = useState("");
+
+  // Patient Referral History
+  const [referrals, setReferrals] = useState<Referral[]>([]);
+  const [referralLoading, setReferralLoading] = useState(false);
+  const [referralError, setReferralError] = useState("");
+  const [referralHistoryLoaded, setReferralHistoryLoaded] = useState(false);
+  const [referralScopeRestricted, setReferralScopeRestricted] = useState(false);
+  const [selectedReferral, setSelectedReferral] = useState<Referral | null>(null);
+
+  // Restore authenticated session on page refresh
+  useEffect(() => {
+    setMounted(true);
+    const stored = getStoredUser();
+    if (stored) {
+      setUser(stored);
+    }
+  }, []);
+
+  const login = async (u = loginUsername, p = loginPassword) => {
     setLoginLoading(true);
     setLoginError("");
 
     try {
-      const response = await fetch(
-        "http://127.0.0.1:8000/login",
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            username: loginUsername,
-            password: loginPassword,
-          }),
-        }
-      );
-
-      const result = await response.json();
-
-      if (!response.ok || !result.success) {
-        throw new Error(
-          result.detail ||
-            result.message ||
-            "Login failed."
-        );
-      }
-
+      const result = await apiLogin(u, p);
+      setStoredSession(result.user, result.access_token);
       setUser(result.user);
-    } catch (err) {
-      setLoginError(
-        err instanceof Error
-          ? err.message
-          : "Login failed."
-      );
+    } catch (err: any) {
+      setLoginError(err.message || "Invalid authentication credentials.");
     } finally {
       setLoginLoading(false);
     }
   };
 
-  const [patientId, setPatientId] = useState("PAT000002");
-  const [data, setData] = useState<ApiResponse | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState("");
-
-  const [reservationLoading, setReservationLoading] = useState(false);
-  const [reservationHospitalId, setReservationHospitalId] =
-    useState<string | null>(null);
-  const [reservation, setReservation] = useState<any>(null);
-  const [reservationError, setReservationError] = useState("");
-
-  const [referrals, setReferrals] = useState<Referral[]>([]);
-  const [referralLoading, setReferralLoading] = useState(false);
-  const [referralError, setReferralError] = useState("");
-  const [selectedReferral, setSelectedReferral] =
-    useState<Referral | null>(null);
+  const handleSelectDemo = (acc: (typeof DEMO_ACCOUNTS)[0]) => {
+    setLoginUsername(acc.username);
+    setLoginPassword(acc.password);
+    login(acc.username, acc.password);
+  };
 
   const findHospitals = async () => {
+    if (!patientId.trim()) {
+      setError("Please enter a valid Patient ID.");
+      return;
+    }
+
     setLoading(true);
     setError("");
     setData(null);
 
     try {
-      const response = await fetch(
-        `http://127.0.0.1:8000/hospitals?patient_id=${patientId}`
-      );
-
-      if (!response.ok) {
-        throw new Error("Failed to fetch hospital data");
-      }
-
-      const result = await response.json();
+      const result = await apiGetRecommendations(patientId.trim());
       setData(result);
-    } catch (err) {
-      setError(
-        "Backend API se connection nahi ho pa raha. Check karo Terminal 1 mein Uvicorn server running hai."
-      );
+    } catch (err: any) {
+      setError(err.message || "Unable to connect to hospital recommendation service.");
     } finally {
       setLoading(false);
     }
@@ -175,9 +147,7 @@ export default function Home() {
     try {
       const response = await fetch("http://127.0.0.1:8000/referral", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           patient_id: patientId,
           hospital_id: hospitalId,
@@ -185,642 +155,494 @@ export default function Home() {
       });
 
       const result = await response.json();
-
       if (!response.ok || !result.success) {
         throw new Error(result.message || "Hospital reservation failed");
       }
-
       setReservation(result);
-    } catch (err) {
-      setReservationError(
-        err instanceof Error ? err.message : "Reservation failed"
-      );
+    } catch (err: any) {
+      setReservationError(err.message || "Reservation failed");
     } finally {
       setReservationLoading(false);
     }
   };
 
   const loadReferralHistory = async () => {
-    if (!patientId.trim()) return;
+    if (!patientId.trim()) {
+      setReferralError("Please enter a valid Patient ID.");
+      return;
+    }
 
     setReferralLoading(true);
     setReferralError("");
+    setReferralScopeRestricted(false);
 
     try {
-      const response = await fetch(
-        `http://127.0.0.1:8000/patients/${patientId}/referrals`
-      );
-
-      if (!response.ok) {
-        throw new Error("Failed to fetch referral history");
-      }
-
-      const result: ReferralHistoryResponse = await response.json();
-
-      if (!result.success) {
-        throw new Error("Referral history unavailable");
-      }
-
+      const result = await apiGetPatientReferrals(patientId.trim());
       setReferrals(result.referrals || []);
-    } catch (err) {
-      setReferralError(
-        err instanceof Error
-          ? err.message
-          : "Failed to load referral history"
-      );
+      setReferralScopeRestricted(Boolean(result.scope_restricted));
+      setReferralHistoryLoaded(true);
+    } catch (err: any) {
+      setReferralError(err.message || "Failed to load referral history.");
+      setReferrals([]);
+      setReferralHistoryLoaded(false);
     } finally {
       setReferralLoading(false);
     }
   };
 
+  if (!mounted) {
+    return (
+      <main className="min-h-screen bg-slate-950 flex items-center justify-center">
+        <LoadingState message="Initializing healthcare session..." />
+      </main>
+    );
+  }
+
+  // Route to Authorized Tier Dashboard
   if (user) {
     if (user.role === "HOSPITAL") {
-      return (
-        <HospitalDashboard user={user} />
-      );
+      return <HospitalDashboard user={user} />;
+    }
+    if (user.role === "DISTRICT_ADMIN") {
+      return <DistrictDashboard user={user} />;
+    }
+    if (user.role === "STATE_ADMIN") {
+      return <StateDashboard user={user} />;
+    }
+    if (user.role === "CENTRAL_ADMIN") {
+      return <CentralDashboard user={user} />;
     }
 
     return (
-      <main className="min-h-screen bg-slate-950 text-white flex items-center justify-center">
-        <div className="rounded-2xl border border-slate-800 bg-slate-900 p-8 text-center">
-          <h1 className="text-2xl font-bold">
-            Dashboard
-          </h1>
-
-          <p className="mt-2 text-slate-400">
-            {user.role} dashboard is not configured yet.
+      <main className="min-h-screen bg-slate-950 text-white flex items-center justify-center p-6">
+        <div className="rounded-2xl border border-slate-800 bg-slate-900 p-8 text-center max-w-md">
+          <h1 className="text-xl font-bold">Unrecognized Healthcare Role</h1>
+          <p className="mt-2 text-xs text-slate-400">
+            Account {user.username} with role {user.role} does not have an active dashboard configuration.
           </p>
+          <button
+            onClick={() => {
+              clearStoredSession();
+              setUser(null);
+            }}
+            className="mt-5 rounded-xl bg-blue-600 px-4 py-2 text-xs font-semibold text-white hover:bg-blue-500"
+          >
+            Return to Login
+          </button>
         </div>
       </main>
     );
   }
 
+  // Unauthenticated Portal: Login + Public Emergency Triage
   return (
-    <main className="min-h-screen bg-slate-950 text-white">
-      {/* Login */}
-      <section className="mx-auto max-w-md px-6 pt-16">
-
-        <div className="rounded-2xl border border-slate-800 bg-slate-900 p-6 shadow-xl">
-
-          <div className="text-center">
-            <div className="text-5xl">
+    <main className="min-h-screen bg-slate-950 text-white flex flex-col font-sans">
+      {/* Top Banner */}
+      <header className="border-b border-slate-800/80 bg-slate-900/90 backdrop-blur sticky top-0 z-30">
+        <div className="mx-auto flex max-w-7xl items-center justify-between px-4 sm:px-6 py-4">
+          <div className="flex items-center gap-3">
+            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-blue-600/20 border border-blue-500/30 text-xl shadow-inner">
               🏥
             </div>
-
-            <h2 className="mt-4 text-2xl font-bold">
-              Hospital Referral AI
-            </h2>
-
-            <p className="mt-2 text-sm text-slate-400">
-              Hospital Staff Login
-            </p>
-          </div>
-
-          <div className="mt-6 space-y-4">
-
             <div>
-              <label className="mb-2 block text-sm text-slate-400">
-                Username
-              </label>
-
-              <input
-                type="text"
-                value={loginUsername}
-                onChange={(e) =>
-                  setLoginUsername(e.target.value)
-                }
-                className="w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 outline-none focus:border-blue-500"
-                placeholder="Hospital username"
-              />
+              <h1 className="text-base sm:text-lg font-bold tracking-tight text-white">
+                SIH Hospital AI Command Platform
+              </h1>
+              <p className="text-[11px] text-slate-400">
+                Multi-Tier Healthcare Referral, Bed Reservation & Critical Care Logistics
+              </p>
             </div>
-
-            <div>
-              <label className="mb-2 block text-sm text-slate-400">
-                Password
-              </label>
-
-              <input
-                type="password"
-                value={loginPassword}
-                onChange={(e) =>
-                  setLoginPassword(e.target.value)
-                }
-                className="w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 outline-none focus:border-blue-500"
-                placeholder="Password"
-              />
-            </div>
-
-            {loginError && (
-              <div className="rounded-xl border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-400">
-                {loginError}
-              </div>
-            )}
-
-            <button
-              onClick={login}
-              disabled={loginLoading}
-              className="w-full rounded-xl bg-blue-600 px-5 py-3 font-semibold transition hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              {loginLoading
-                ? "Signing in..."
-                : "Sign In"}
-            </button>
-
           </div>
 
-          <div className="mt-5 rounded-xl bg-slate-950 p-4 text-xs text-slate-500">
-            Demo hospital: <span className="text-slate-300">gh00046</span>
-          </div>
-
-        </div>
-
-      </section>
-
-      {/* Header */}
-      <header className="border-b border-slate-800 bg-slate-900 mt-12">
-        <div className="mx-auto flex max-w-7xl items-center justify-between px-6 py-5">
-          <div>
-            <h1 className="text-2xl font-bold">🏥 Hospital Referral AI</h1>
-            <p className="mt-1 text-sm text-slate-400">
-              Intelligent Hospital Recommendation & Bed Reservation System
-            </p>
-          </div>
-
-          <div className="rounded-full bg-emerald-500/10 px-4 py-2 text-sm text-emerald-400">
-            ● API Connected
+          <div className="flex items-center gap-2">
+            <span className="flex h-2 w-2 rounded-full bg-emerald-400 animate-pulse" />
+            <span className="text-xs font-medium text-emerald-400 hidden sm:inline">
+              PostgreSQL & Redis Online
+            </span>
           </div>
         </div>
       </header>
 
-      <div className="mx-auto max-w-7xl px-6 py-8">
-        {/* Patient Search */}
-        <section className="rounded-2xl border border-slate-800 bg-slate-900 p-6 shadow-xl">
-          <div className="mb-5">
-            <h2 className="text-xl font-semibold">Find Suitable Hospitals</h2>
-            <p className="mt-1 text-sm text-slate-400">
-              Enter a patient ID to get AI-ranked hospital recommendations.
-            </p>
+      {/* Main Container */}
+      <div className="flex-1 mx-auto w-full max-w-7xl px-4 sm:px-6 py-8 space-y-12">
+        {/* Section 1: Staff Authentication & Quick Demo Selector */}
+        <section className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
+          {/* Left: Login Card */}
+          <div className="lg:col-span-5 rounded-2xl border border-slate-800 bg-slate-900 p-6 sm:p-8 shadow-xl">
+            <div className="text-left">
+              <span className="rounded-full bg-blue-500/10 px-2.5 py-0.5 text-[11px] font-bold text-blue-400 border border-blue-500/20 uppercase tracking-wider">
+                Staff Authentication
+              </span>
+              <h2 className="mt-3 text-xl font-bold tracking-tight text-white">
+                Sign in to Health Operations
+              </h2>
+              <p className="mt-1 text-xs text-slate-400">
+                Access your designated hospital or administrative jurisdiction dashboard.
+              </p>
+            </div>
+
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                login();
+              }}
+              className="mt-6 space-y-4"
+            >
+              <div>
+                <label className="block text-xs font-semibold text-slate-300">
+                  Username / Facility Handle
+                </label>
+                <input
+                  type="text"
+                  value={loginUsername}
+                  onChange={(e) => setLoginUsername(e.target.value)}
+                  className="mt-1.5 w-full rounded-xl border border-slate-700 bg-slate-950 px-3.5 py-2.5 text-xs text-white placeholder-slate-500 outline-none focus:border-blue-500 transition"
+                  placeholder="e.g. gh00046"
+                  required
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-300">
+                  Password
+                </label>
+                <input
+                  type="password"
+                  value={loginPassword}
+                  onChange={(e) => setLoginPassword(e.target.value)}
+                  className="mt-1.5 w-full rounded-xl border border-slate-700 bg-slate-950 px-3.5 py-2.5 text-xs text-white placeholder-slate-500 outline-none focus:border-blue-500 transition"
+                  placeholder="Password"
+                  required
+                />
+              </div>
+
+              {loginError && (
+                <div className="rounded-xl border border-rose-500/30 bg-rose-500/10 p-3 text-xs text-rose-300">
+                  ⚠️ {loginError}
+                </div>
+              )}
+
+              <button
+                type="submit"
+                disabled={loginLoading}
+                className="w-full rounded-xl bg-blue-600 px-4 py-2.5 text-xs font-bold text-white transition hover:bg-blue-500 disabled:opacity-50 flex items-center justify-center gap-2 shadow-sm"
+              >
+                {loginLoading && (
+                  <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-white border-t-transparent" />
+                )}
+                <span>{loginLoading ? "Authenticating..." : "Sign In to Dashboard"}</span>
+              </button>
+            </form>
           </div>
 
-          <div className="flex flex-col gap-4 sm:flex-row">
+          {/* Right: Quick Demo Role Switcher */}
+          <div className="lg:col-span-7 rounded-2xl border border-slate-800 bg-slate-900/60 p-6 sm:p-8 space-y-4">
+            <div>
+              <span className="rounded-full bg-emerald-500/10 px-2.5 py-0.5 text-[11px] font-bold text-emerald-400 border border-emerald-500/20 uppercase tracking-wider">
+                Evaluation & Testing Presets
+              </span>
+              <h2 className="mt-3 text-xl font-bold tracking-tight text-white">
+                Multi-Role Demo Portals
+              </h2>
+              <p className="mt-1 text-xs text-slate-400">
+                Select an authorized account below to instantly evaluate role-based controls, data isolation, and live workflow capabilities:
+              </p>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2">
+              {DEMO_ACCOUNTS.map((acc) => (
+                <div
+                  key={acc.username}
+                  onClick={() => handleSelectDemo(acc)}
+                  className="cursor-pointer rounded-xl border border-slate-800 bg-slate-950 p-4 transition hover:border-blue-500 hover:bg-slate-900/80 group"
+                >
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-bold text-white group-hover:text-blue-400 transition">
+                      {acc.roleLabel}
+                    </span>
+                    <span
+                      className={`rounded-full px-2 py-0.5 text-[10px] font-semibold border ${acc.color}`}
+                    >
+                      {acc.badge}
+                    </span>
+                  </div>
+                  <p className="mt-1 text-xs text-slate-300 font-medium">{acc.desc}</p>
+                  <div className="mt-3 flex items-center justify-between text-[11px] text-slate-500 pt-2 border-t border-slate-800/80">
+                    <span className="font-mono text-slate-400">{acc.username}</span>
+                    <span className="text-blue-400 font-semibold group-hover:translate-x-0.5 transition">
+                      Launch Portal →
+                    </span>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            <div className="rounded-xl border border-slate-800 bg-slate-950 p-4 text-[11px] text-slate-400 flex items-start gap-2.5">
+              <span>🛡️</span>
+              <p>
+                Strict Role-Based Access Control (RBAC): Hospital staff can only view and manage local facility patients; District admins monitor authorized district facilities; State and Central users access aggregate macro metrics.
+              </p>
+            </div>
+          </div>
+        </section>
+
+        {/* Section 2: Clinical Triage & AI Recommendation Tool */}
+        <section className="rounded-2xl border border-slate-800 bg-slate-900 p-6 sm:p-8 shadow-xl space-y-6">
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 border-b border-slate-800 pb-4">
+            <div>
+              <span className="rounded-full bg-indigo-500/10 px-2.5 py-0.5 text-[11px] font-bold text-indigo-400 border border-indigo-500/20 uppercase tracking-wider">
+                Emergency Clinical Triage
+              </span>
+              <h2 className="mt-2 text-xl font-bold tracking-tight text-white">
+                Find Eligible Hospitals & Clinical Recommendations
+              </h2>
+              <p className="mt-1 text-xs text-slate-400">
+                Execute AI-assisted destination hospital ranking based on clinical eligibility, ICU capacity, and distance.
+              </p>
+            </div>
+          </div>
+
+          <div className="flex flex-col sm:flex-row gap-3">
             <input
               type="text"
               value={patientId}
-              onChange={(e) => setPatientId(e.target.value)}
-              placeholder="Enter Patient ID"
-              className="flex-1 rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-white outline-none transition focus:border-blue-500"
+              onChange={(e) => {
+                setPatientId(e.target.value);
+                setReferralHistoryLoaded(false);
+                setReferralScopeRestricted(false);
+                setReferrals([]);
+                setReferralError("");
+              }}
+              placeholder="Enter Patient ID (e.g. PAT000002)"
+              className="flex-1 rounded-xl border border-slate-700 bg-slate-950 px-4 py-2.5 text-xs text-white placeholder-slate-500 outline-none focus:border-blue-500 transition font-mono"
             />
-
             <button
               onClick={findHospitals}
               disabled={loading}
-              className="rounded-xl bg-blue-600 px-7 py-3 font-semibold transition hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-50"
+              className="rounded-xl bg-blue-600 px-6 py-2.5 text-xs font-bold text-white hover:bg-blue-500 disabled:opacity-50 transition flex items-center justify-center gap-2"
             >
-              {loading ? "Finding..." : "Find Hospitals"}
+              {loading && (
+                <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-white border-t-transparent" />
+              )}
+              <span>{loading ? "Ranking..." : "Find Hospitals"}</span>
             </button>
           </div>
 
-          {error && (
-            <div className="mt-4 rounded-xl border border-red-500/30 bg-red-500/10 p-4 text-sm text-red-400">
-              {error}
+          {error && <ErrorState title="Triage Query Error" message={error} />}
+
+          {/* Triage Summary Cards */}
+          {data && (
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 pt-2">
+              <div className="rounded-xl border border-slate-800 bg-slate-950 p-4">
+                <p className="text-[11px] text-slate-400 uppercase">Patient ID</p>
+                <p className="mt-1 font-mono text-lg font-bold text-white">
+                  {data.patient_id}
+                </p>
+              </div>
+
+              <div className="rounded-xl border border-slate-800 bg-slate-950 p-4">
+                <p className="text-[11px] text-slate-400 uppercase">Clinical Priority</p>
+                <div className="mt-1">
+                  <PriorityBadge priority={data.priority || "Stable"} size="sm" />
+                </div>
+              </div>
+
+              <div className="rounded-xl border border-emerald-500/20 bg-emerald-950/20 p-4">
+                <p className="text-[11px] text-emerald-400 uppercase">Eligible Facilities</p>
+                <p className="mt-1 text-lg font-bold text-emerald-300">
+                  {data.total_hospitals ?? data.hospitals?.length ?? 0}
+                </p>
+              </div>
+
+              <div className="rounded-xl border border-slate-800 bg-slate-950 p-4">
+                <p className="text-[11px] text-slate-400 uppercase">Disqualified Facilities</p>
+                <p className="mt-1 text-lg font-bold text-slate-400">
+                  {data.disqualified_hospitals_count ?? 0}
+                </p>
+                <p className="text-[10px] text-slate-500">Excluded by Stage A safety</p>
+              </div>
             </div>
           )}
-        </section>
 
-        {/* Patient Summary */}
-        {data && (
-          <section className="mt-6 grid gap-4 sm:grid-cols-3">
-            <div className="rounded-2xl border border-slate-800 bg-slate-900 p-5">
-              <p className="text-sm text-slate-400">Patient ID</p>
-              <p className="mt-2 text-xl font-bold">{data.patient_id}</p>
-            </div>
+          {/* Recommended Facilities List */}
+          {data && data.hospitals && data.hospitals.length > 0 && (
+            <div className="space-y-4 pt-4 border-t border-slate-800">
+              <div className="rounded-xl border border-blue-500/20 bg-blue-500/10 p-3.5 text-xs text-blue-200 flex items-start gap-2.5">
+                <span className="text-base">ℹ️</span>
+                <div>
+                  <span className="font-bold text-white">Clinical Decision Support Notice: </span>
+                  {data.ai_disclaimer ||
+                    "AI recommendations are statistical estimates based on capability and capacity. Not an autonomous clinical decision; requires attending physician verification."}
+                </div>
+              </div>
 
-            <div className="rounded-2xl border border-red-500/20 bg-red-500/5 p-5">
-              <p className="text-sm text-slate-400">Priority</p>
-              <p className="mt-2 text-xl font-bold text-red-400">
-                {data.priority}
-              </p>
-            </div>
+              <div className="space-y-3">
+                {data.hospitals.map((h: any, idx: number) => {
+                  const hId = h.hospital_id || h.hospital?.hospital_id || `HOSP-${idx + 1}`;
+                  const hName = h.hospital_name || h.name || h.hospital?.name || `Hospital ${hId}`;
+                  const distanceKm = typeof h.distance_km === "number" ? h.distance_km : null;
+                  const availBeds = typeof h.available_beds === "number" ? h.available_beds : 0;
+                  const availIcu = typeof h.available_icu_beds === "number" ? h.available_icu_beds : 0;
+                  const prob = h.success_probability;
+                  const rank = h.rank ?? idx + 1;
 
-            <div className="rounded-2xl border border-slate-800 bg-slate-900 p-5">
-              <p className="text-sm text-slate-400">Eligible Hospitals</p>
-              <p className="mt-2 text-xl font-bold">{data.total_hospitals}</p>
-            </div>
-          </section>
-        )}
+                  return (
+                    <div
+                      key={hId}
+                      className="rounded-xl border border-slate-800 bg-slate-950 p-5 transition hover:border-slate-700 space-y-3"
+                    >
+                      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+                        <div className="flex items-center gap-2.5">
+                          <span className="rounded-full bg-blue-500/20 px-2.5 py-0.5 text-xs font-bold text-blue-400">
+                            Rank #{rank}
+                          </span>
+                          <h4 className="text-sm font-bold text-white">{hName}</h4>
+                          <span className="text-xs font-mono text-slate-400">({hId})</span>
+                        </div>
+                        <div className="flex items-center gap-4 text-xs">
+                          <span className="text-slate-400">Distance: {formatDistance(distanceKm)}</span>
+                          <span className="text-slate-300">{availBeds} Beds</span>
+                          <span className="text-emerald-400 font-semibold">{availIcu} ICU Free</span>
+                          <span className="rounded bg-slate-800 px-2 py-0.5 text-[11px] text-blue-300 font-mono">
+                            Model Fit: {formatModelFitScore(prob)}
+                          </span>
+                        </div>
+                      </div>
 
-        {/* Hospital Results */}
-        {data && (
-          <section className="mt-8">
-            <div className="mb-5">
-              <h2 className="text-2xl font-bold">Hospital Recommendations</h2>
-              <p className="mt-1 text-sm text-slate-400">
-                Hospitals ranked using clinical rules, available resources,
-                distance and ML prediction.
-              </p>
-            </div>
+                      {h.reasons && h.reasons.length > 0 && (
+                        <p className="text-xs text-slate-400">
+                          ✓ {h.reasons.join(" • ")}
+                        </p>
+                      )}
 
-            <div className="space-y-5">
-              {data.hospitals.map((hospital) => (
-                <div
-                  key={hospital.hospital_id}
-                  className="rounded-2xl border border-slate-800 bg-slate-900 p-6 shadow-lg"
-                >
-                  {/* Hospital Header */}
-                  <div className="flex flex-col justify-between gap-4 md:flex-row">
-                    <div>
-                      <div className="mb-2 flex items-center gap-3">
-                        <span className="rounded-full bg-blue-500/10 px-3 py-1 text-sm font-semibold text-blue-400">
-                          Rank #{hospital.rank}
+                      <div className="flex items-center justify-between pt-2 border-t border-slate-900">
+                        <span className="text-[11px] text-slate-500">
+                          {h.recommendation_type || "Eligible Regional Destination"}
                         </span>
-
-                        {hospital.rank === 1 && (
-                          <span className="rounded-full bg-emerald-500/10 px-3 py-1 text-sm font-semibold text-emerald-400">
-                            Recommended
-                          </span>
-                        )}
+                        <button
+                          onClick={() => reserveHospital(hId)}
+                          disabled={reservationLoading || availIcu <= 0}
+                          className="rounded-lg bg-emerald-600 px-3.5 py-1.5 text-xs font-semibold text-white hover:bg-emerald-500 disabled:opacity-40 transition"
+                        >
+                          {reservationLoading && reservationHospitalId === hId
+                            ? "Reserving..."
+                            : availIcu <= 0
+                            ? "ICU Full"
+                            : "Reserve ICU Bed"}
+                        </button>
                       </div>
 
-                      <h3 className="text-xl font-bold">
-                        {hospital.hospital_name}
-                      </h3>
+                      {reservationHospitalId === hId && reservation && (
+                        <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-3 text-xs text-emerald-300">
+                          ✓ Bed successfully reserved for patient {patientId}. Status: ACTIVE.
+                        </div>
+                      )}
 
-                      <p className="mt-1 text-sm text-slate-400">
-                        {hospital.city}, {hospital.district}, {hospital.state}
-                      </p>
+                      {reservationHospitalId === hId && reservationError && (
+                        <div className="rounded-lg border border-rose-500/30 bg-rose-500/10 p-3 text-xs text-rose-300">
+                          ⚠️ {reservationError}
+                        </div>
+                      )}
                     </div>
-
-                    <div className="text-left md:text-right">
-                      <p className="text-sm text-slate-400">Final Score</p>
-                      <p className="text-3xl font-bold text-blue-400">
-                        {hospital.final_score}
-                      </p>
-                    </div>
-                  </div>
-
-                  {/* Stats */}
-                  <div className="mt-6 grid grid-cols-2 gap-3 md:grid-cols-4">
-                    <div className="rounded-xl bg-slate-950 p-4">
-                      <p className="text-xs text-slate-500">Distance</p>
-                      <p className="mt-1 font-semibold">
-                        {hospital.distance_km} km
-                      </p>
-                    </div>
-
-                    <div className="rounded-xl bg-slate-950 p-4">
-                      <p className="text-xs text-slate-500">Available Beds</p>
-                      <p className="mt-1 font-semibold">
-                        {hospital.available_beds}
-                      </p>
-                    </div>
-
-                    <div className="rounded-xl bg-slate-950 p-4">
-                      <p className="text-xs text-slate-500">Available ICU</p>
-                      <p className="mt-1 font-semibold text-emerald-400">
-                        {hospital.available_icu_beds}
-                      </p>
-                    </div>
-
-                    <div className="rounded-xl bg-slate-950 p-4">
-                      <p className="text-xs text-slate-500">ML Probability</p>
-                      <p className="mt-1 font-semibold">
-                        {(hospital.success_probability * 100).toFixed(2)}%
-                      </p>
-                    </div>
-                  </div>
-
-                  {/* Matching */}
-                  <div className="mt-5">
-                    <p className="mb-3 text-sm font-semibold text-slate-300">
-                      Capability Match
-                    </p>
-
-                    <div className="flex flex-wrap gap-2">
-                      <MatchBadge
-                        label="Specialty"
-                        value={hospital.specialty_match}
-                      />
-                      <MatchBadge label="Tests" value={hospital.test_match} />
-                      <MatchBadge label="Beds" value={hospital.bed_match} />
-                      <MatchBadge label="ICU" value={hospital.icu_match} />
-                    </div>
-                  </div>
-
-                  <div className="mt-5 border-t border-slate-800 pt-4">
-                    <span className="text-sm text-slate-400">
-                      Recommendation Type:{" "}
-                    </span>
-
-                    <span className="text-sm font-semibold text-blue-400">
-                      {hospital.recommendation_type}
-                    </span>
-                  </div>
-
-                  <div className="mt-5 flex justify-end">
-                    <button
-                      onClick={() => reserveHospital(hospital.hospital_id)}
-                      disabled={
-                        (reservationLoading &&
-                          reservationHospitalId === hospital.hospital_id) ||
-                        hospital.available_icu_beds <= 0
-                      }
-                      className="rounded-xl bg-emerald-600 px-6 py-3 font-semibold transition hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-50"
-                    >
-                      {reservationLoading &&
-                      reservationHospitalId === hospital.hospital_id
-                        ? "Reserving..."
-                        : hospital.available_icu_beds <= 0
-                        ? "ICU Unavailable"
-                        : "Reserve ICU Bed"}
-                    </button>
-                  </div>
-
-                  {/* In-Card Reservation Result */}
-                  {reservationHospitalId === hospital.hospital_id && reservation && (
-                    <div className="mt-5 rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-4">
-                      <p className="font-semibold text-emerald-400">
-                        ✓ ICU Bed Reserved Successfully
-                      </p>
-
-                      <div className="mt-3 grid gap-2 text-sm">
-                        <p>
-                          <span className="text-slate-400">Patient: </span>
-                          {reservation.reservation?.patient_id}
-                        </p>
-
-                        <p>
-                          <span className="text-slate-400">Bed: </span>
-                          {reservation.reservation?.bed_type}
-                        </p>
-
-                        <p>
-                          <span className="text-slate-400">Status: </span>
-                          <span className="font-semibold text-emerald-400">
-                            {reservation.reservation?.status}
-                          </span>
-                        </p>
-                      </div>
-                    </div>
-                  )}
-
-                  {/* In-Card Reservation Error */}
-                  {reservationHospitalId === hospital.hospital_id && reservationError && (
-                    <div className="mt-5 rounded-xl border border-red-500/30 bg-red-500/10 p-4">
-                      <p className="font-semibold text-red-400">
-                        Reservation Failed
-                      </p>
-                      <p className="mt-1 text-sm text-red-300">
-                        {reservationError}
-                      </p>
-                    </div>
-                  )}
-                </div>
-              ))}
-            </div>
-          </section>
-        )}
-
-        {/* Referral History */}
-        <section className="mt-8">
-          <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-            <div>
-              <h2 className="text-2xl font-bold">
-                Patient Referral History
-              </h2>
-
-              <p className="mt-1 text-sm text-slate-400">
-                Track the patient's complete hospital referral journey.
-              </p>
-            </div>
-
-            <button
-              onClick={loadReferralHistory}
-              disabled={referralLoading}
-              className="rounded-xl border border-slate-700 bg-slate-900 px-5 py-3 text-sm font-semibold transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              {referralLoading ? "Loading..." : "Load Referral History"}
-            </button>
-          </div>
-
-          {referralError && (
-            <div className="rounded-xl border border-red-500/30 bg-red-500/10 p-4 text-sm text-red-400">
-              {referralError}
+                  );
+                })}
+              </div>
             </div>
           )}
 
-          {referrals.length > 0 && (
-            <div className="space-y-4">
-              {referrals.map((referral) => (
-                <div
-                  key={referral.referral_id}
-                  className="rounded-2xl border border-slate-800 bg-slate-900 p-5"
-                >
-                  <div className="flex flex-col justify-between gap-4 md:flex-row">
-                    <div>
-                      <p className="text-xs text-slate-500">Referral ID</p>
+          {/* Patient Referral History Lookup */}
+          <div className="pt-6 border-t border-slate-800 space-y-4">
+            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+              <div>
+                <h3 className="text-base font-bold text-white">
+                  Patient Network Transfer History
+                </h3>
+                <p className="text-xs text-slate-400">
+                  Track full referral timeline for Patient {patientId}
+                </p>
+              </div>
 
-                      <p className="font-semibold text-blue-400">
-                        {referral.referral_id}
-                      </p>
-                    </div>
-
-                    <span
-                      className={`rounded-full px-3 py-1 text-xs font-semibold ${
-                        referral.status === "COMPLETED"
-                          ? "bg-emerald-500/10 text-emerald-400"
-                          : referral.status === "DIED"
-                          ? "bg-red-500/10 text-red-400"
-                          : "bg-blue-500/10 text-blue-400"
-                      }`}
-                    >
-                      {referral.status}
-                    </span>
-                  </div>
-
-                  <div className="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-                    <div className="rounded-xl bg-slate-950 p-4">
-                      <p className="text-xs text-slate-500">From Hospital</p>
-                      <p className="mt-1 font-semibold">
-                        {referral.from_hospital_id}
-                      </p>
-                    </div>
-
-                    <div className="rounded-xl bg-slate-950 p-4">
-                      <p className="text-xs text-slate-500">To Hospital</p>
-                      <p className="mt-1 font-semibold">
-                        {referral.to_hospital_id}
-                      </p>
-                    </div>
-
-                    <div className="rounded-xl bg-slate-950 p-4">
-                      <p className="text-xs text-slate-500">Priority</p>
-                      <p className="mt-1 font-semibold">
-                        {referral.priority}
-                      </p>
-                    </div>
-
-                    <div className="rounded-xl bg-slate-950 p-4">
-                      <p className="text-xs text-slate-500">Bed</p>
-                      <p className="mt-1 font-semibold">
-                        {referral.bed_type || "N/A"}
-                      </p>
-                    </div>
-                  </div>
-
-                  <div className="mt-4">
-                    <p className="text-xs text-slate-500">Reason</p>
-
-                    <p className="mt-1 text-sm text-slate-300">
-                      {referral.reason}
-                    </p>
-                  </div>
-
-                  <div className="mt-5">
-                    <button
-                      onClick={() =>
-                        setSelectedReferral(
-                          selectedReferral?.referral_id ===
-                            referral.referral_id
-                            ? null
-                            : referral
-                        )
-                      }
-                      className="rounded-xl border border-slate-700 px-4 py-2 text-sm font-semibold hover:bg-slate-800"
-                    >
-                      {selectedReferral?.referral_id === referral.referral_id
-                        ? "Hide Timeline"
-                        : "View Timeline"}
-                    </button>
-                  </div>
-
-                  {selectedReferral?.referral_id === referral.referral_id && (
-                    <ReferralTimeline referral={referral} />
-                  )}
-                </div>
-              ))}
+              <button
+                onClick={loadReferralHistory}
+                disabled={referralLoading}
+                className="rounded-xl border border-slate-700 bg-slate-800 px-4 py-2 text-xs font-semibold text-slate-300 hover:bg-slate-700 transition"
+              >
+                {referralLoading ? "Loading..." : "Load Referral History"}
+              </button>
             </div>
-          )}
 
-          {!referralLoading &&
-            referrals.length === 0 &&
-            !referralError && (
-              <div className="rounded-2xl border border-slate-800 bg-slate-900 p-8 text-center text-slate-400">
-                No referral history loaded.
+            {referralError && <ErrorState title="History Notice" message={referralError} />}
+
+            {referralScopeRestricted && (
+              <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-4 text-xs text-amber-300">
+                🔒 Access Scope Notice: Patient transfer records exist, but clinical details are restricted to originating or destination hospitals.
               </div>
             )}
-        </section>
 
-        {/* Initial State */}
-        {!data && !loading && !error && (
-          <div className="mt-12 text-center">
-            <div className="text-6xl">🏥</div>
+            {referralHistoryLoaded && !referralScopeRestricted && referrals.length === 0 && (
+              <EmptyState
+                title="No Referral Records Found"
+                description={`No prior hospital transfer records found for patient ${patientId}.`}
+              />
+            )}
 
-            <h2 className="mt-5 text-2xl font-bold">
-              Intelligent Hospital Referral
-            </h2>
+            {referrals.length > 0 && (
+              <div className="space-y-3">
+                {referrals.map((r) => (
+                  <div key={r.referral_id} className="rounded-xl border border-slate-800 bg-slate-950 p-4">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <span className="font-mono text-xs font-bold text-blue-400">
+                          {r.referral_id}
+                        </span>
+                        <span className="text-xs text-slate-400">
+                          {r.from_hospital_id} → {r.to_hospital_id}
+                        </span>
+                      </div>
+                      <StatusBadge status={r.status} size="sm" />
+                    </div>
+                    <div className="mt-2 text-xs text-slate-400">
+                      Reason: {r.reason} • Priority: {r.priority}
+                    </div>
+                    <div className="mt-3 flex justify-end">
+                      <button
+                        onClick={() =>
+                          setSelectedReferral(
+                            selectedReferral?.referral_id === r.referral_id ? null : r
+                          )
+                        }
+                        className="rounded-lg border border-slate-700 px-3 py-1 text-xs text-slate-300 hover:bg-slate-800"
+                      >
+                        {selectedReferral?.referral_id === r.referral_id
+                          ? "Hide Timeline"
+                          : "View Timeline"}
+                      </button>
+                    </div>
 
-            <p className="mx-auto mt-2 max-w-xl text-slate-400">
-              Enter a patient ID above to find the most suitable hospitals
-              based on clinical requirements, ICU availability, distance,
-              hospital capabilities and ML prediction.
-            </p>
+                    {selectedReferral?.referral_id === r.referral_id && (
+                      <div className="mt-4">
+                        <ReferralTimeline referral={r} />
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
-        )}
+        </section>
       </div>
+
+      {/* Footer */}
+      <footer className="border-t border-slate-800/80 bg-slate-900/60 py-6 text-center text-xs text-slate-500">
+        <div className="mx-auto max-w-7xl px-4 sm:px-6 space-y-1">
+          <p className="font-semibold text-slate-400">
+            SIH Hospital AI • Smart Healthcare Referral & Bed Allocation Platform
+          </p>
+          <p className="text-[11px] text-slate-500">
+            Developed under Smart India Hackathon guidelines. Certified for Clinical Decision Support.
+          </p>
+        </div>
+      </footer>
     </main>
   );
-}
-
-function MatchBadge({ label, value }: { label: string; value: number }) {
-  const matched = value === 1;
-
-  return (
-    <span
-      className={`rounded-full px-3 py-1 text-xs font-semibold ${
-        matched
-          ? "bg-emerald-500/10 text-emerald-400"
-          : "bg-red-500/10 text-red-400"
-      }`}
-    >
-      {matched ? "✓" : "✕"} {label}
-    </span>
-  );
-}
-
-function ReferralTimeline({ referral }: { referral: Referral }) {
-  const events = [
-    {
-      label: "Referral Created",
-      time: referral.created_at,
-    },
-    {
-      label: "Accepted",
-      time: referral.accepted_at,
-    },
-    {
-      label: "In Transit",
-      time: referral.in_transit_at,
-    },
-    {
-      label: "Arrived",
-      time: referral.arrived_at,
-    },
-    {
-      label: "Treatment Started",
-      time: referral.treatment_started_at,
-    },
-    {
-      label: "Completed",
-      time: referral.completed_at,
-    },
-    {
-      label: "Transferred",
-      time: referral.transferred_at,
-    },
-    {
-      label: "Died",
-      time: referral.died_at,
-    },
-    {
-      label: "Closed",
-      time: referral.closed_at,
-    },
-  ];
-
-  const activeEvents = events.filter((event) => event.time);
-
-  return (
-    <div className="mt-6 rounded-2xl border border-slate-800 bg-slate-950 p-5">
-      <h3 className="text-lg font-bold">Referral Timeline</h3>
-
-      <div className="mt-5 space-y-5">
-        {activeEvents.map((event, index) => (
-          <div key={`${event.label}-${event.time}`} className="flex gap-4">
-            <div className="flex flex-col items-center">
-              <div className="h-3 w-3 rounded-full bg-emerald-400" />
-
-              {index !== activeEvents.length - 1 && (
-                <div className="mt-1 h-full w-px bg-slate-700" />
-              )}
-            </div>
-
-            <div className="pb-3">
-              <p className="font-semibold">{event.label}</p>
-
-              <p className="mt-1 text-xs text-slate-500">
-                {formatDateTime(event.time!)}
-              </p>
-            </div>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function formatDateTime(value: string) {
-  return new Date(value).toLocaleString("en-IN", {
-    dateStyle: "medium",
-    timeStyle: "medium",
-  });
 }

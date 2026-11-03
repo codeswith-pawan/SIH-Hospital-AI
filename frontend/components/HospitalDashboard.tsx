@@ -1,1173 +1,1227 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import React, { useEffect, useState } from "react";
+import {
+  User,
+  BedInventory,
+  Referral,
+  NotificationItem,
+  Patient,
+  HospitalRecommendation,
+} from "@/lib/types";
+import {
+  apiGetInventory,
+  apiGetHospitalReferrals,
+  apiUpdateReferralStatus,
+  apiGetNotifications,
+  apiMarkNotificationRead,
+  apiMarkAllNotificationsRead,
+  apiGetRecommendations,
+  apiCreateReferral,
+  apiGetHospitalPatients,
+  apiGetPatientReferrals,
+} from "@/lib/api";
+import { formatDateTime, formatDistance, formatModelFitScore } from "@/lib/formatters";
+import { DashboardLayout } from "./shared/DashboardLayout";
+import { StatCard } from "./shared/StatCard";
+import { StatusBadge, PriorityBadge } from "./shared/StatusBadge";
+import { DataTable, Column } from "./shared/DataTable";
+import { ReferralTimeline } from "./shared/ReferralTimeline";
+import { ConfirmationModal } from "./shared/ConfirmationModal";
+import { EmptyState } from "./shared/EmptyState";
+import { LoadingState, ErrorState } from "./shared/LoadingAndErrorStates";
 
-type User = {
-  user_id: string;
-  username: string;
-  name: string;
-  role: string;
-  hospital_id?: string | null;
-  state?: string | null;
-  district?: string | null;
-};
-
-type Inventory = {
-  hospital_id: string;
-  available_beds: number;
-  available_icu_beds: number;
-  reserved_beds: number;
-  reserved_icu_beds: number;
-};
-
-type Referral = {
-  referral_id: string;
-  patient_id: string;
-  from_hospital_id: string;
-  to_hospital_id: string;
-  reason: string;
-  priority: string;
-  status: string;
-  created_at: string;
-  accepted_at?: string | null;
-  rejected_at?: string | null;
-  in_transit_at?: string | null;
-  arrived_at?: string | null;
-  treatment_started_at?: string | null;
-  completed_at?: string | null;
-  transferred_at?: string | null;
-  died_at?: string | null;
-  closed_at?: string | null;
-  reservation_hospital_id?: string;
-  bed_type?: string;
-  reservation_release_status?: string;
-};
-
-type ReferralResponse = {
-  success: boolean;
-  hospital_id: string;
-  total_referrals: number;
-  referrals: Referral[];
-};
-
-
-type PatientResponse = {
-  success: boolean;
-  hospital_id: string;
-  count: number;
-  patients: Patient[];
-};
-
-
-type HospitalDashboardProps = {
+interface HospitalDashboardProps {
   user: User;
-};
+}
 
-type Patient = {
-  visit_id: number;
-  patient_id: string;
-  name: string;
-  age: number;
-  gender: string;
-  disease: string;
-  priority: string;
-  icu_required: string;
-  status: string;
-  admission_type: string;
-  admitted_at: string;
-  treatment_started_at?: string | null;
-  completed_at?: string | null;
-};
+export default function HospitalDashboard({ user }: HospitalDashboardProps) {
+  const [activeTab, setActiveTab] = useState("overview");
 
-export default function HospitalDashboard({
-  user,
-}: HospitalDashboardProps) {
-  const [activeTab, setActiveTab] = useState("dashboard");
-
-  const [inventory, setInventory] =
-    useState<Inventory | null>(null);
+  // Inventory State
+  const [inventory, setInventory] = useState<BedInventory | null>(null);
   const [inventoryLoading, setInventoryLoading] = useState(false);
   const [inventoryError, setInventoryError] = useState("");
 
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState("");
-
+  // Referrals State
   const [referrals, setReferrals] = useState<Referral[]>([]);
+  const [referralScope, setReferralScope] = useState<"incoming" | "outgoing" | "all">("incoming");
   const [referralLoading, setReferralLoading] = useState(false);
   const [referralError, setReferralError] = useState("");
-  const [selectedReferral, setSelectedReferral] =
-    useState<Referral | null>(null);
-  const [statusLoading, setStatusLoading] = useState(false);
+  const [selectedReferralForTimeline, setSelectedReferralForTimeline] = useState<Referral | null>(null);
+  const [reservationNotice, setReservationNotice] = useState<{
+    referralId: string;
+    message: string;
+  } | null>(null);
 
+  // Status Action Loading & Modals
+  const [statusLoading, setStatusLoading] = useState(false);
+  const [acceptingId, setAcceptingId] = useState<string | null>(null);
+
+  // Dispatch Ambulance Modal
+  const [dispatchModalReferral, setDispatchModalReferral] = useState<Referral | null>(null);
+  const [dispatchAmbulanceId, setDispatchAmbulanceId] = useState("AMB-108-ADVANCED");
+  const [dispatchEtaMinutes, setDispatchEtaMinutes] = useState(20);
+  const [dispatchNotes, setDispatchNotes] = useState("");
+
+  // Reject Referral Modal
+  const [rejectModalReferral, setRejectModalReferral] = useState<Referral | null>(null);
+  const [rejectReason, setRejectReason] = useState("");
+
+  // Notifications State
+  const [notifications, setNotifications] = useState<NotificationItem[]>([]);
+  const [unreadCount, setUnreadCount] = useState(0);
+  const [notifLoading, setNotifLoading] = useState(false);
+
+  // Patients State
   const [patients, setPatients] = useState<Patient[]>([]);
   const [patientLoading, setPatientLoading] = useState(false);
   const [patientError, setPatientError] = useState("");
+  const [selectedPatientForHistory, setSelectedPatientForHistory] = useState<Patient | null>(null);
+  const [patientReferrals, setPatientReferrals] = useState<Referral[]>([]);
+  const [patientReferralLoading, setPatientReferralLoading] = useState(false);
 
-  useEffect(() => {
-    if (!user.hospital_id) {
-      setLoading(false);
-      return;
-    }
+  // Referral Creation & AI Recommendations Modal
+  const [referralModalPatient, setReferralModalPatient] = useState<Patient | null>(null);
+  const [referralTargetHospitalId, setReferralTargetHospitalId] = useState("");
+  const [referralPriority, setReferralPriority] = useState("Urgent");
+  const [referralBedType, setReferralBedType] = useState<"ICU" | "GENERAL" | "EMERGENCY">("GENERAL");
+  const [referralReason, setReferralReason] = useState("");
+  const [recommendations, setRecommendations] = useState<HospitalRecommendation[]>([]);
+  const [recLoading, setRecLoading] = useState(false);
+  const [recError, setRecError] = useState("");
+  const [createReferralLoading, setCreateReferralLoading] = useState(false);
+  const [createReferralError, setCreateReferralError] = useState("");
+  const [createReferralSuccess, setCreateReferralSuccess] = useState("");
 
-    const loadInitialInventory = async () => {
-      try {
-        setLoading(true);
-        setError("");
+  const hospitalId = user.hospital_id || "GH00046";
 
-        const response = await fetch(
-          `http://127.0.0.1:8000/hospitals/${user.hospital_id}/inventory`
-        );
-
-        if (!response.ok) {
-          throw new Error(
-            "Hospital inventory load nahi ho paayi."
-          );
-        }
-
-        const result = await response.json();
-
-        if (!result.success) {
-          throw new Error(
-            "Inventory data unavailable."
-          );
-        }
-
-        setInventory(result.inventory);
-      } catch (err) {
-        setError(
-          err instanceof Error
-            ? err.message
-            : "Failed to load inventory."
-        );
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    loadInitialInventory();
-  }, [user.hospital_id]);
-
+  // Data Loaders
   const loadInventory = async () => {
-    if (!user.hospital_id) return;
-
     setInventoryLoading(true);
     setInventoryError("");
-
     try {
-      const response = await fetch(
-        `http://127.0.0.1:8000/hospitals/${user.hospital_id}/inventory`
-      );
-
-      if (!response.ok) {
-        throw new Error("Failed to load hospital inventory");
-      }
-
-      const result = await response.json();
-
-      if (!result.success) {
-        throw new Error("Inventory unavailable");
-      }
-
-      setInventory(result.inventory);
-    } catch (err) {
-      setInventoryError(
-        err instanceof Error
-          ? err.message
-          : "Failed to load inventory"
-      );
+      const data = await apiGetInventory(hospitalId);
+      const invData = data.inventory || data;
+      setInventory({
+        hospital_id: invData.hospital_id || hospitalId,
+        available_beds: Number(invData.available_beds ?? 0),
+        available_icu_beds: Number(invData.available_icu_beds ?? 0),
+        reserved_beds: Number(invData.reserved_beds ?? 0),
+        reserved_icu_beds: Number(invData.reserved_icu_beds ?? 0),
+      });
+    } catch (err: any) {
+      setInventoryError(err.message || "Failed to load hospital bed inventory.");
     } finally {
       setInventoryLoading(false);
     }
   };
 
-  const loadReferrals = async () => {
-    if (!user.hospital_id) return;
-
+  const loadReferrals = async (scope: "incoming" | "outgoing" | "all" = referralScope) => {
     setReferralLoading(true);
     setReferralError("");
-
     try {
-      const response = await fetch(
-        `http://127.0.0.1:8000/hospitals/${user.hospital_id}/referrals`
-      );
-
-      if (!response.ok) {
-        throw new Error("Failed to load referrals.");
-      }
-
-      const result: ReferralResponse =
-        await response.json();
-
-      if (!result.success) {
-        throw new Error("Referral data unavailable.");
-      }
-
-      setReferrals(result.referrals || []);
-    } catch (err) {
-      setReferralError(
-        err instanceof Error
-          ? err.message
-          : "Failed to load referrals."
-      );
+      const data = await apiGetHospitalReferrals(hospitalId, scope);
+      setReferrals(data.referrals || []);
+    } catch (err: any) {
+      setReferralError(err.message || "Failed to load hospital referral roster.");
     } finally {
       setReferralLoading(false);
     }
   };
-  const loadPatients = async () => {
-  if (!user.hospital_id) return;
 
-  setPatientLoading(true);
-  setPatientError("");
-
-  try {
-    const response = await fetch(
-      `http://127.0.0.1:8000/patients/hospital/${user.hospital_id}`
-    );
-
-    if (!response.ok) {
-      throw new Error("Failed to load patients.");
-    }
-
-    const result: PatientResponse =
-      await response.json();
-
-    if (!result.success) {
-      throw new Error("Patient data unavailable.");
-    }
-
-    setPatients(result.patients || []);
-  } catch (err) {
-    setPatientError(
-      err instanceof Error
-        ? err.message
-        : "Failed to load patients."
-    );
-  } finally {
-    setPatientLoading(false);
-  }
-};
-
-  const updateReferralStatus = async (
-    referralId: string,
-    newStatus: string
-  ) => {
-    setStatusLoading(true);
-    setReferralError("");
-
+  const loadNotifications = async () => {
+    setNotifLoading(true);
     try {
-      const response = await fetch(
-        `http://127.0.0.1:8000/referrals/${referralId}/status/${newStatus}`,
-        {
-          method: "POST",
-        }
-      );
-
-      const result = await response.json();
-
-      if (!response.ok || !result.success) {
-        throw new Error(
-          result.detail?.message ||
-            result.message ||
-            "Status update failed."
-        );
-      }
-
-      await loadReferrals();
-
-      if (selectedReferral?.referral_id === referralId) {
-        setSelectedReferral(result.referral);
-      }
-    } catch (err) {
-      setReferralError(
-        err instanceof Error
-          ? err.message
-          : "Status update failed."
-      );
+      const data = await apiGetNotifications(hospitalId);
+      setNotifications(data.notifications || []);
+      setUnreadCount(data.unread_count || 0);
+    } catch {
+      // Background poll failure
     } finally {
-      setStatusLoading(false);
+      setNotifLoading(false);
     }
   };
 
-  useEffect(() => {
+  const loadPatients = async () => {
+    setPatientLoading(true);
+    setPatientError("");
+    try {
+      const data = await apiGetHospitalPatients(hospitalId);
+      setPatients(data.patients || []);
+    } catch (err: any) {
+      setPatientError(err.message || "Failed to load admitted hospital patient list.");
+    } finally {
+      setPatientLoading(false);
+    }
+  };
 
-  if (!user.hospital_id) return;
-
-  if (activeTab === "referrals") {
-    loadReferrals();
-  }
-
-  if (activeTab === "patients") {
+  const refreshAll = () => {
+    loadInventory();
+    loadReferrals(referralScope);
+    loadNotifications();
     loadPatients();
-  }
+  };
 
-}, [activeTab, user.hospital_id]);
+  useEffect(() => {
+    refreshAll();
+  }, [hospitalId]);
 
-  return (
-    <main className="min-h-screen bg-slate-950 text-white">
+  // Status Transitions
+  const handleUpdateStatus = async (
+    referralId: string,
+    newStatus: string,
+    payload?: { ambulance_id?: string; eta_minutes?: number; notes?: string; reason?: string }
+  ) => {
+    setStatusLoading(true);
+    setReferralError("");
+    setReservationNotice(null);
+    if (newStatus === "ACCEPTED") setAcceptingId(referralId);
 
-      {/* Header */}
-      <header className="border-b border-slate-800 bg-slate-900">
-        <div className="mx-auto flex max-w-7xl items-center justify-between px-6 py-5">
+    try {
+      const res = await apiUpdateReferralStatus(referralId, newStatus, payload);
 
-          <div>
-            <h1 className="text-xl font-bold">
-              🏥 Hospital Referral AI
-            </h1>
+      if (newStatus === "ACCEPTED" && res.reservation) {
+        const r = res.reservation;
+        setReservationNotice({
+          referralId,
+          message: r.bed_id
+            ? `Bed ${r.bed_id} (${r.bed_type || "ICU"}) reserved automatically.`
+            : "Bed reservation confirmed in inventory.",
+        });
+      }
 
-            <p className="mt-1 text-sm text-slate-400">
-              {user.name}
-            </p>
-          </div>
+      await loadReferrals(referralScope);
+      await loadInventory();
+      await loadNotifications();
+    } catch (err: any) {
+      setReferralError(err.message || "Failed to execute referral status transition.");
+    } finally {
+      setStatusLoading(false);
+      setAcceptingId(null);
+    }
+  };
 
-          <div className="text-right">
-            <p className="text-sm font-semibold">
-              {user.hospital_id || "N/A"}
-            </p>
+  // Ambulance Dispatch Action
+  const confirmDispatch = async () => {
+    if (!dispatchModalReferral) return;
+    await handleUpdateStatus(dispatchModalReferral.referral_id, "IN_TRANSIT", {
+      ambulance_id: dispatchAmbulanceId.trim(),
+      eta_minutes: Number(dispatchEtaMinutes) || 15,
+      notes: dispatchNotes.trim(),
+    });
+    setDispatchModalReferral(null);
+  };
 
-            <p className="text-xs text-emerald-400">
-              ● Online
-            </p>
-          </div>
+  // Rejection Action
+  const confirmReject = async () => {
+    if (!rejectModalReferral) return;
+    await handleUpdateStatus(rejectModalReferral.referral_id, "REJECTED", {
+      reason: rejectReason.trim() || "Clinical capacity or specialty mismatch.",
+    });
+    setRejectModalReferral(null);
+    setRejectReason("");
+  };
 
+  // Referral Creation & AI Recommendations
+  const openReferralModal = (patient: Patient) => {
+    setReferralModalPatient(patient);
+    setReferralTargetHospitalId("");
+    setReferralPriority(patient.priority || "Urgent");
+    setReferralBedType(patient.icu_required === "Yes" ? "ICU" : "GENERAL");
+    setReferralReason(`Transfer required for ${patient.disease || "specialized treatment"}. Patient: ${patient.name}`);
+    setRecommendations([]);
+    setRecError("");
+    setCreateReferralError("");
+    setCreateReferralSuccess("");
+    fetchRecommendations(patient.patient_id);
+  };
+
+  const fetchRecommendations = async (pid: string) => {
+    setRecLoading(true);
+    setRecError("");
+    try {
+      const data = await apiGetRecommendations(pid);
+      setRecommendations(data.hospitals || []);
+    } catch (err: any) {
+      setRecError(err.message || "Failed to retrieve AI-ranked hospital recommendations.");
+    } finally {
+      setRecLoading(false);
+    }
+  };
+
+  const submitCreateReferral = async () => {
+    if (!referralModalPatient) return;
+    if (!referralTargetHospitalId.trim()) {
+      setCreateReferralError("Please select or specify a destination hospital ID.");
+      return;
+    }
+    setCreateReferralLoading(true);
+    setCreateReferralError("");
+    setCreateReferralSuccess("");
+
+    try {
+      const res = await apiCreateReferral({
+        patient_id: referralModalPatient.patient_id,
+        from_hospital_id: hospitalId,
+        to_hospital_id: referralTargetHospitalId.trim().toUpperCase(),
+        priority: referralPriority,
+        bed_type: referralBedType,
+        reason: referralReason.trim() || `Clinical referral for ${referralModalPatient.disease}`,
+      });
+
+      setCreateReferralSuccess(
+        `Referral ${res.referral?.referral_id || ""} submitted successfully! Awaiting destination facility acceptance.`
+      );
+      setTimeout(() => {
+        setReferralModalPatient(null);
+        setActiveTab("referrals");
+        setReferralScope("outgoing");
+        loadReferrals("outgoing");
+        loadNotifications();
+      }, 1200);
+    } catch (err: any) {
+      setCreateReferralError(err.message || "Failed to submit patient referral.");
+    } finally {
+      setCreateReferralLoading(false);
+    }
+  };
+
+  // Patient Referral History Drawer
+  const openPatientHistory = async (patient: Patient) => {
+    setSelectedPatientForHistory(patient);
+    setPatientReferralLoading(true);
+    try {
+      const data = await apiGetPatientReferrals(patient.patient_id);
+      setPatientReferrals(data.referrals || []);
+    } catch {
+      setPatientReferrals([]);
+    } finally {
+      setPatientReferralLoading(false);
+    }
+  };
+
+  // Computed Metrics
+  const activeReferralsCount = referrals.filter(
+    (r) => !["COMPLETED", "REJECTED", "DIED", "CLOSED"].includes(r.status)
+  ).length;
+
+  const pendingIncomingCount = referrals.filter(
+    (r) => r.to_hospital_id === hospitalId && r.status === "PENDING"
+  ).length;
+
+  const inTransitCount = referrals.filter((r) => r.status === "IN_TRANSIT").length;
+
+  // Referral Columns Definition for DataTable
+  const referralColumns: Column<Referral>[] = [
+    {
+      key: "referral_id",
+      header: "Case ID",
+      render: (r) => (
+        <div>
+          <span className="font-mono font-bold text-blue-400">{r.referral_id}</span>
+          <p className="text-[10px] text-slate-400">{r.patient_id}</p>
         </div>
-      </header>
-
-      {/* Navigation */}
-      <nav className="border-b border-slate-800 bg-slate-900">
-        <div className="mx-auto flex max-w-7xl gap-2 px-6 py-3">
-
-          {[
-            ["dashboard", "Dashboard"],
-            ["referrals", "Referrals"],
-            ["inventory", "Bed Inventory"],
-            ["patients", "Patients"],
-          ].map(([id, label]) => (
-
-            <button
-              key={id}
-              onClick={() => setActiveTab(id)}
-              className={`rounded-lg px-4 py-2 text-sm font-semibold transition ${
-                activeTab === id
-                  ? "bg-blue-600 text-white"
-                  : "text-slate-400 hover:bg-slate-800 hover:text-white"
+      ),
+    },
+    {
+      key: "direction",
+      header: "Route",
+      render: (r) => {
+        const isIncoming = r.to_hospital_id === hospitalId;
+        return (
+          <div className="space-y-0.5">
+            <span
+              className={`inline-block rounded px-1.5 py-0.5 text-[10px] font-bold ${
+                isIncoming
+                  ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20"
+                  : "bg-blue-500/10 text-blue-400 border border-blue-500/20"
               }`}
             >
-              {label}
-            </button>
+              {isIncoming ? "INBOUND" : "OUTBOUND"}
+            </span>
+            <p className="text-[11px] text-slate-300">
+              {isIncoming ? `From: ${r.from_hospital_id}` : `To: ${r.to_hospital_id}`}
+            </p>
+          </div>
+        );
+      },
+    },
+    {
+      key: "priority",
+      header: "Priority",
+      render: (r) => <PriorityBadge priority={r.priority} size="sm" />,
+    },
+    {
+      key: "bed_type",
+      header: "Bed Reqd",
+      render: (r) => (
+        <span className="font-semibold text-slate-200">
+          {r.bed_type || (r.reason?.toLowerCase().includes("icu") ? "ICU" : "GENERAL")}
+        </span>
+      ),
+    },
+    {
+      key: "status",
+      header: "Current Stage",
+      render: (r) => <StatusBadge status={r.status} size="sm" />,
+    },
+    {
+      key: "created_at",
+      header: "Initiated",
+      render: (r) => (
+        <span className="font-mono text-[11px] text-slate-400">
+          {formatDateTime(r.created_at)}
+        </span>
+      ),
+    },
+    {
+      key: "actions",
+      header: "Operational Actions",
+      align: "right",
+      render: (r) => {
+        const isDestination = r.to_hospital_id === hospitalId;
+        const isSource = r.from_hospital_id === hospitalId;
+        const isBusy = statusLoading;
 
-          ))}
-
-        </div>
-      </nav>
-
-      {/* Content */}
-      <div className="mx-auto max-w-7xl px-6 py-8">
-
-        {activeTab === "dashboard" && (
-          <>
-
-            <div className="flex flex-col justify-between gap-3 md:flex-row md:items-center">
-
-              <div>
-                <h2 className="text-2xl font-bold">
-                  Hospital Dashboard
-                </h2>
-
-                <p className="mt-1 text-sm text-slate-400">
-                  Real-time hospital operations overview.
-                </p>
-              </div>
-
-              <div className="rounded-lg border border-emerald-500/20 bg-emerald-500/10 px-4 py-2 text-sm text-emerald-400">
-                ● Live Inventory
-              </div>
-
-            </div>
-
-            {/* Error */}
-            {error && (
-              <div className="mt-6 rounded-xl border border-red-500/30 bg-red-500/10 p-4 text-sm text-red-400">
-                {error}
-              </div>
+        return (
+          <div className="flex items-center justify-end gap-1.5 flex-wrap">
+            {/* INCOMING PENDING -> ACCEPT / REJECT */}
+            {isDestination && r.status === "PENDING" && (
+              <>
+                <button
+                  onClick={() => handleUpdateStatus(r.referral_id, "ACCEPTED")}
+                  disabled={isBusy}
+                  className="rounded-lg bg-emerald-600 px-2.5 py-1 text-[11px] font-semibold text-white hover:bg-emerald-500 disabled:opacity-50 transition"
+                  title="Accept referral and reserve bed automatically"
+                >
+                  {acceptingId === r.referral_id ? "Reserving..." : "Accept & Reserve"}
+                </button>
+                <button
+                  onClick={() => setRejectModalReferral(r)}
+                  disabled={isBusy}
+                  className="rounded-lg border border-rose-500/40 bg-rose-500/10 px-2.5 py-1 text-[11px] font-semibold text-rose-300 hover:bg-rose-500/20 disabled:opacity-50 transition"
+                  title="Decline referral"
+                >
+                  Reject
+                </button>
+              </>
             )}
 
-            {/* Stats */}
-            <div className="mt-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+            {/* OUTGOING ACCEPTED -> DISPATCH AMBULANCE */}
+            {isSource && r.status === "ACCEPTED" && (
+              <button
+                onClick={() => setDispatchModalReferral(r)}
+                disabled={isBusy}
+                className="rounded-lg bg-blue-600 px-2.5 py-1 text-[11px] font-semibold text-white hover:bg-blue-500 disabled:opacity-50 transition"
+                title="Dispatch ambulance and enter ETA"
+              >
+                Dispatch Ambulance
+              </button>
+            )}
 
-              <StatCard
-                title="Available Beds"
-                value={
-                  loading
-                    ? "..."
-                    : String(
-                        inventory?.available_beds ?? 0
-                      )
-                }
-                subtitle="General beds"
-              />
+            {/* INCOMING IN_TRANSIT -> CONFIRM ARRIVAL */}
+            {isDestination && r.status === "IN_TRANSIT" && (
+              <button
+                onClick={() => handleUpdateStatus(r.referral_id, "ARRIVED")}
+                disabled={isBusy}
+                className="rounded-lg bg-cyan-600 px-2.5 py-1 text-[11px] font-semibold text-white hover:bg-cyan-500 disabled:opacity-50 transition"
+                title="Confirm patient arrived at emergency bay"
+              >
+                Mark Arrived
+              </button>
+            )}
 
-              <StatCard
-                title="Available ICU"
-                value={
-                  loading
-                    ? "..."
-                    : String(
-                        inventory?.available_icu_beds ?? 0
-                      )
-                }
-                subtitle="ICU beds"
-              />
+            {/* INCOMING ARRIVED -> COMMENCE TREATMENT */}
+            {isDestination && r.status === "ARRIVED" && (
+              <button
+                onClick={() => handleUpdateStatus(r.referral_id, "TREATMENT_ACTIVE")}
+                disabled={isBusy}
+                className="rounded-lg bg-purple-600 px-2.5 py-1 text-[11px] font-semibold text-white hover:bg-purple-500 disabled:opacity-50 transition"
+                title="Admit to bed and start treatment"
+              >
+                Start Treatment
+              </button>
+            )}
 
-              <StatCard
-                title="Reserved Beds"
-                value={
-                  loading
-                    ? "..."
-                    : String(
-                        inventory?.reserved_beds ?? 0
-                      )
-                }
-                subtitle="Currently reserved"
-              />
+            {/* INCOMING TREATMENT_ACTIVE -> COMPLETE & RELEASE BED */}
+            {isDestination && r.status === "TREATMENT_ACTIVE" && (
+              <button
+                onClick={() => handleUpdateStatus(r.referral_id, "COMPLETED")}
+                disabled={isBusy}
+                className="rounded-lg bg-emerald-700 px-2.5 py-1 text-[11px] font-semibold text-white hover:bg-emerald-600 disabled:opacity-50 transition"
+                title="Complete care and return reserved bed to inventory"
+              >
+                Complete & Release Bed
+              </button>
+            )}
 
-              <StatCard
-                title="Reserved ICU"
-                value={
-                  loading
-                    ? "..."
-                    : String(
-                        inventory?.reserved_icu_beds ?? 0
-                      )
-                }
-                subtitle="Currently reserved"
-              />
+            {/* VIEW TIMELINE BUTTON */}
+            <button
+              onClick={() => setSelectedReferralForTimeline(r)}
+              className="rounded-lg border border-slate-700 bg-slate-800 px-2 py-1 text-[11px] text-slate-300 hover:bg-slate-700 transition"
+              title="Inspect lifecycle audit timeline"
+            >
+              Timeline
+            </button>
+          </div>
+        );
+      },
+    },
+  ];
 
-            </div>
+  // Patients Columns Definition
+  const patientColumns: Column<Patient>[] = [
+    {
+      key: "patient_id",
+      header: "Patient ID",
+      render: (p) => <span className="font-mono font-bold text-slate-200">{p.patient_id}</span>,
+    },
+    {
+      key: "name",
+      header: "Patient Name",
+      render: (p) => (
+        <div>
+          <p className="font-semibold text-white">{p.name}</p>
+          <p className="text-[11px] text-slate-400">
+            {p.age}y • {p.gender}
+          </p>
+        </div>
+      ),
+    },
+    {
+      key: "disease",
+      header: "Diagnosis / Condition",
+      render: (p) => <span className="text-slate-300">{p.disease}</span>,
+    },
+    {
+      key: "priority",
+      header: "Priority",
+      render: (p) => <PriorityBadge priority={p.priority} size="sm" />,
+    },
+    {
+      key: "icu_required",
+      header: "ICU Need",
+      render: (p) => (
+        <span
+          className={`font-semibold text-[11px] px-2 py-0.5 rounded-full ${
+            p.icu_required === "Yes"
+              ? "bg-rose-500/10 text-rose-400 border border-rose-500/20"
+              : "bg-slate-800 text-slate-400"
+          }`}
+        >
+          {p.icu_required === "Yes" ? "Required" : "Standard"}
+        </span>
+      ),
+    },
+    {
+      key: "actions",
+      header: "Clinical Workflow",
+      align: "right",
+      render: (p) => (
+        <div className="flex items-center justify-end gap-2">
+          <button
+            onClick={() => openReferralModal(p)}
+            className="rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-blue-500 transition"
+            title="Launch AI-assisted destination hospital recommendations"
+          >
+            Create Referral
+          </button>
+          <button
+            onClick={() => openPatientHistory(p)}
+            className="rounded-lg border border-slate-700 bg-slate-800 px-2.5 py-1.5 text-xs font-medium text-slate-300 hover:bg-slate-700 transition"
+            title="View referral history across network"
+          >
+            History
+          </button>
+        </div>
+      ),
+    },
+  ];
 
-            {/* Inventory Overview */}
-            <div className="mt-8 rounded-2xl border border-slate-800 bg-slate-900 p-6">
+  return (
+    <DashboardLayout
+      user={user}
+      tierBadge={{ label: "Hospital Clinical Command", color: "blue" }}
+      title={user.name || `Hospital Facility ${hospitalId}`}
+      subtitle={`Facility ID: ${hospitalId} • Jurisdiction: ${user.district || "Amritsar"}, ${user.state || "Punjab"}`}
+      tabs={[
+        { id: "overview", label: "Operations Overview", icon: "📊" },
+        { id: "referrals", label: "Referrals Command", icon: "🔄", badge: activeReferralsCount },
+        { id: "inventory", label: "Bed & Resource Inventory", icon: "🛏️" },
+        { id: "patients", label: "Admitted Inpatients", icon: "👥", badge: patients.length },
+      ]}
+      activeTab={activeTab}
+      onTabChange={setActiveTab}
+      onRefresh={refreshAll}
+      refreshLoading={inventoryLoading || referralLoading}
+      notifications={notifications}
+      unreadCount={unreadCount}
+      notifLoading={notifLoading}
+      onMarkNotifRead={(nid) => {
+        apiMarkNotificationRead(hospitalId, nid).then(loadNotifications);
+      }}
+      onMarkAllNotifsRead={() => {
+        apiMarkAllNotificationsRead(hospitalId).then(loadNotifications);
+      }}
+    >
+      {/* Notice Banner */}
+      {reservationNotice && (
+        <div className="mb-6 rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-4 text-xs text-emerald-300 flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <span className="text-base">✓</span>
+            <span className="font-semibold">{reservationNotice.message}</span>
+          </div>
+          <button
+            onClick={() => setReservationNotice(null)}
+            className="text-emerald-400 hover:text-white"
+          >
+            ✕
+          </button>
+        </div>
+      )}
 
-              <h3 className="text-lg font-semibold">
-                Bed Inventory Overview
-              </h3>
+      {referralError && (
+        <ErrorState
+          title="Referral Operations Notice"
+          message={referralError}
+          onRetry={() => loadReferrals(referralScope)}
+          className="mb-6"
+        />
+      )}
 
-              <div className="mt-5 grid gap-4 md:grid-cols-2">
+      {/* ============================================================ */}
+      {/* TAB 1: OPERATIONS OVERVIEW */}
+      {/* ============================================================ */}
+      {activeTab === "overview" && (
+        <div className="space-y-6">
+          {/* Top KPI Metrics Grid */}
+          <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+            <StatCard
+              title="Available General Beds"
+              value={inventory?.available_beds ?? "—"}
+              subtitle={`Reserved: ${inventory?.reserved_beds ?? 0}`}
+              icon="🛏️"
+              variant="primary"
+            />
+            <StatCard
+              title="Available ICU Beds"
+              value={inventory?.available_icu_beds ?? "—"}
+              subtitle={`Reserved: ${inventory?.reserved_icu_beds ?? 0}`}
+              icon="⚡"
+              variant={Number(inventory?.available_icu_beds) > 0 ? "success" : "danger"}
+            />
+            <StatCard
+              title="Pending Inbound Referrals"
+              value={pendingIncomingCount}
+              subtitle="Requires destination clinical triage"
+              icon="⏳"
+              variant={pendingIncomingCount > 0 ? "warning" : "default"}
+            />
+            <StatCard
+              title="Ambulances En Route"
+              value={inTransitCount}
+              subtitle="Active emergency transit"
+              icon="🚑"
+              variant="primary"
+            />
+          </div>
 
-                <InventoryCard
-                  title="General Beds"
-                  available={
-                    inventory?.available_beds ?? 0
-                  }
-                  reserved={
-                    inventory?.reserved_beds ?? 0
-                  }
-                />
-
-                <InventoryCard
-                  title="ICU Beds"
-                  available={
-                    inventory?.available_icu_beds ?? 0
-                  }
-                  reserved={
-                    inventory?.reserved_icu_beds ?? 0
-                  }
-                />
-
-              </div>
-
-            </div>
-
-            {/* Hospital Information */}
-            <div className="mt-8 rounded-2xl border border-slate-800 bg-slate-900 p-6">
-
-              <h3 className="text-lg font-semibold">
-                Hospital Information
-              </h3>
-
-              <div className="mt-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-
-                <InfoItem
-                  label="Hospital ID"
-                  value={
-                    user.hospital_id || "N/A"
-                  }
-                />
-
-                <InfoItem
-                  label="State"
-                  value={
-                    user.state || "N/A"
-                  }
-                />
-
-                <InfoItem
-                  label="District"
-                  value={
-                    user.district || "N/A"
-                  }
-                />
-
-                <InfoItem
-                  label="Role"
-                  value={user.role}
-                />
-
-              </div>
-
-            </div>
-
-          </>
-        )}
-
-        {activeTab === "referrals" && (
-          <div>
-            <div className="flex flex-col justify-between gap-3 md:flex-row md:items-center">
+          {/* Quick Inbound Triage Queue */}
+          <div className="rounded-xl border border-slate-800 bg-slate-900/70 p-5">
+            <div className="mb-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 border-b border-slate-800 pb-3">
               <div>
-                <h2 className="text-2xl font-bold">
-                  Incoming Referrals
-                </h2>
-
-                <p className="mt-1 text-sm text-slate-400">
-                  Manage patients referred to your hospital.
+                <h3 className="text-base font-bold text-white">
+                  Active Clinical Inbound Queue
+                </h3>
+                <p className="text-xs text-slate-400">
+                  Referrals transferred to this hospital awaiting admission or arrival confirmation
                 </p>
               </div>
-
               <button
-                onClick={loadReferrals}
-                disabled={referralLoading}
-                className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold hover:bg-blue-500 disabled:opacity-50"
+                onClick={() => {
+                  setReferralScope("incoming");
+                  setActiveTab("referrals");
+                }}
+                className="text-xs font-semibold text-blue-400 hover:text-blue-300 transition"
               >
-                {referralLoading ? "Refreshing..." : "Refresh Referrals"}
+                View Full Roster →
               </button>
             </div>
 
-            {referralError && (
-              <div className="mt-5 rounded-xl border border-red-500/30 bg-red-500/10 p-4 text-sm text-red-400">
-                {referralError}
-              </div>
-            )}
+            <DataTable
+              columns={referralColumns}
+              data={referrals.filter((r) => r.to_hospital_id === hospitalId && r.status === "PENDING")}
+              keyExtractor={(r) => r.referral_id}
+              loading={referralLoading}
+              emptyTitle="Inbound Queue Clear"
+              emptyDescription="No incoming transfer requests currently awaiting review."
+              pageSize={5}
+            />
+          </div>
+        </div>
+      )}
 
-            {!referralLoading && referrals.length === 0 && (
-              <div className="mt-6 rounded-2xl border border-slate-800 bg-slate-900 p-8 text-center">
-                <p className="text-slate-400">
-                  No incoming referrals found.
-                </p>
-              </div>
-            )}
-
-            <div className="mt-6 space-y-4">
-              {referrals.map((referral) => (
-                <div
-                  key={referral.referral_id}
-                  className="rounded-2xl border border-slate-800 bg-slate-900 p-6"
+      {/* ============================================================ */}
+      {/* TAB 2: REFERRALS COMMAND */}
+      {/* ============================================================ */}
+      {activeTab === "referrals" && (
+        <div className="space-y-6">
+          {/* Scope Selector Tabs */}
+          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-800 pb-3">
+            <div className="flex items-center gap-2">
+              {(["incoming", "outgoing", "all"] as const).map((scope) => (
+                <button
+                  key={scope}
+                  onClick={() => {
+                    setReferralScope(scope);
+                    loadReferrals(scope);
+                  }}
+                  className={`rounded-xl px-4 py-2 text-xs font-bold uppercase tracking-wider transition ${
+                    referralScope === scope
+                      ? "bg-blue-600 text-white shadow-sm"
+                      : "bg-slate-800 text-slate-400 hover:bg-slate-700 hover:text-slate-200"
+                  }`}
                 >
-                  <div className="flex flex-col justify-between gap-4 lg:flex-row">
-                    <div>
-                      <div className="flex flex-wrap items-center gap-2">
-                        <span className="rounded-full bg-blue-500/10 px-3 py-1 text-xs font-semibold text-blue-400">
-                          {referral.referral_id}
-                        </span>
-
-                        <span className="rounded-full bg-red-500/10 px-3 py-1 text-xs font-semibold text-red-400">
-                          {referral.priority}
-                        </span>
-
-                        <span className="rounded-full bg-emerald-500/10 px-3 py-1 text-xs font-semibold text-emerald-400">
-                          {referral.status}
-                        </span>
-                      </div>
-
-                      <h3 className="mt-3 text-lg font-bold">
-                        Patient {referral.patient_id}
-                      </h3>
-
-                      <p className="mt-1 text-sm text-slate-400">
-                        From Hospital: {referral.from_hospital_id}
-                      </p>
-
-                      <p className="mt-1 text-sm text-slate-400">
-                        Reason: {referral.reason}
-                      </p>
-                    </div>
-
-                    <div className="text-left lg:text-right">
-                      <p className="text-xs text-slate-500">
-                        Bed Required
-                      </p>
-
-                      <p className="mt-1 font-semibold">
-                        {referral.bed_type || "Not specified"}
-                      </p>
-                    </div>
-                  </div>
-                  <div className="mt-5 flex flex-wrap gap-3">
-
-  {referral.status === "PENDING" && (
-    <>
-      <button
-        onClick={() =>
-          updateReferralStatus(
-            referral.referral_id,
-            "ACCEPTED"
-          )
-        }
-        disabled={statusLoading}
-        className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold hover:bg-emerald-500 disabled:opacity-50"
-      >
-        {statusLoading ? "Processing..." : "Accept Referral"}
-      </button>
-
-      <button
-        onClick={() =>
-          updateReferralStatus(
-            referral.referral_id,
-            "REJECTED"
-          )
-        }
-        disabled={statusLoading}
-        className="rounded-lg bg-red-600 px-4 py-2 text-sm font-semibold hover:bg-red-500 disabled:opacity-50"
-      >
-        Reject
-      </button>
-    </>
-  )}
-
-  {referral.status === "ACCEPTED" && (
-    <button
-      onClick={() =>
-        updateReferralStatus(
-          referral.referral_id,
-          "IN_TRANSIT"
-        )
-      }
-      disabled={statusLoading}
-      className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold hover:bg-blue-500 disabled:opacity-50"
-    >
-      {statusLoading ? "Processing..." : "Mark In Transit"}
-    </button>
-  )}
-
-  {referral.status === "IN_TRANSIT" && (
-    <button
-      onClick={() =>
-        updateReferralStatus(
-          referral.referral_id,
-          "ARRIVED"
-        )
-      }
-      disabled={statusLoading}
-      className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold hover:bg-indigo-500 disabled:opacity-50"
-    >
-      {statusLoading ? "Processing..." : "Mark Arrived"}
-    </button>
-  )}
-
-  {referral.status === "ARRIVED" && (
-    <button
-      onClick={() =>
-        updateReferralStatus(
-          referral.referral_id,
-          "TREATMENT_ACTIVE"
-        )
-      }
-      disabled={statusLoading}
-      className="rounded-lg bg-purple-600 px-4 py-2 text-sm font-semibold hover:bg-purple-500 disabled:opacity-50"
-    >
-      {statusLoading ? "Processing..." : "Start Treatment"}
-    </button>
-  )}
-
-  {referral.status === "TREATMENT_ACTIVE" && (
-    <button
-      onClick={() =>
-        updateReferralStatus(
-          referral.referral_id,
-          "COMPLETED"
-        )
-      }
-      disabled={statusLoading}
-      className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold hover:bg-emerald-500 disabled:opacity-50"
-    >
-      {statusLoading ? "Processing..." : "Complete Treatment"}
-    </button>
-  )}
-
-  <button
-    onClick={() =>
-      setSelectedReferral(
-        selectedReferral?.referral_id === referral.referral_id
-          ? null
-          : referral
-      )
-    }
-    className="rounded-lg border border-slate-700 px-4 py-2 text-sm font-semibold text-slate-300 hover:bg-slate-800"
-  >
-    {selectedReferral?.referral_id === referral.referral_id
-      ? "Hide Timeline"
-      : "View Timeline"}
-  </button>
-
-</div>
-
-                  {selectedReferral?.referral_id ===
-                    referral.referral_id && (
-                    <ReferralTimeline referral={referral} />
-                  )}
-                </div>
+                  {scope === "incoming"
+                    ? "Inbound Requests"
+                    : scope === "outgoing"
+                    ? "Outbound Referrals"
+                    : "All Hospital Cases"}
+                </button>
               ))}
             </div>
+
+            <p className="text-xs text-slate-400">
+              Showing <span className="font-bold text-slate-200">{referrals.length}</span> total cases
+            </p>
           </div>
-        )}
 
-        {activeTab === "inventory" && (
-          <div>
-            <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-center">
+          {/* Full Referrals Table */}
+          <DataTable
+            columns={referralColumns}
+            data={referrals}
+            keyExtractor={(r) => r.referral_id}
+            loading={referralLoading}
+            searchPlaceholder="Search Case ID, Patient ID, or Hospital..."
+            searchFilterKeys={["referral_id", "patient_id", "from_hospital_id", "to_hospital_id", "reason"]}
+            statusFilterKey="status"
+            statusFilterOptions={[
+              { label: "Pending Review", value: "PENDING" },
+              { label: "Accepted & Reserved", value: "ACCEPTED" },
+              { label: "In Transit", value: "IN_TRANSIT" },
+              { label: "Patient Arrived", value: "ARRIVED" },
+              { label: "Treatment Active", value: "TREATMENT_ACTIVE" },
+              { label: "Completed", value: "COMPLETED" },
+              { label: "Rejected", value: "REJECTED" },
+            ]}
+            emptyTitle="No Referrals Found"
+            emptyDescription="There are no hospital transfer records matching the selected scope or filter."
+            pageSize={10}
+          />
+        </div>
+      )}
+
+      {/* ============================================================ */}
+      {/* TAB 3: BED INVENTORY */}
+      {/* ============================================================ */}
+      {activeTab === "inventory" && (
+        <div className="space-y-6">
+          {inventoryError && (
+            <ErrorState title="Bed Inventory Alert" message={inventoryError} onRetry={loadInventory} />
+          )}
+          <div className="rounded-xl border border-slate-800 bg-slate-900/60 p-6">
+            <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 border-b border-slate-800 pb-4">
               <div>
-                <h2 className="text-2xl font-bold">
-                  Bed & ICU Inventory
-                </h2>
-
-                <p className="mt-1 text-sm text-slate-400">
-                  Live hospital bed availability.
+                <h3 className="text-base font-bold text-white">
+                  Real-Time Bed Availability & Allocation Matrix
+                </h3>
+                <p className="text-xs text-slate-400">
+                  Backed by transactional PostgreSQL locking and atomic reservation rollback
                 </p>
               </div>
-
               <button
                 onClick={loadInventory}
                 disabled={inventoryLoading}
-                className="rounded-lg bg-blue-600 px-5 py-2.5 text-sm font-semibold hover:bg-blue-500 disabled:opacity-50"
+                className="rounded-xl border border-slate-700 bg-slate-800 px-3 py-1.5 text-xs font-semibold text-slate-200 hover:bg-slate-700 transition"
               >
                 {inventoryLoading ? "Refreshing..." : "Refresh Inventory"}
               </button>
             </div>
 
-            {inventoryError && (
-              <div className="mt-5 rounded-xl border border-red-500/30 bg-red-500/10 p-4 text-sm text-red-400">
-                {inventoryError}
-              </div>
-            )}
-
-            {!inventory && !inventoryLoading && !inventoryError && (
-              <div className="mt-6 rounded-2xl border border-slate-800 bg-slate-900 p-8 text-center">
-                <p className="text-slate-400">
-                  Click &quot;Refresh Inventory&quot; to load live inventory.
-                </p>
-              </div>
-            )}
-
-            {inventory && (
-              <>
-                <div className="mt-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-                  <InventoryCard
-                    title="Available Beds"
-                    available={inventory.available_beds}
-                    reserved={inventory.reserved_beds}
-                  />
-
-                  <InventoryCard
-                    title="Available ICU"
-                    available={inventory.available_icu_beds}
-                    reserved={inventory.reserved_icu_beds}
-                  />
-
-                  <StatCard
-                    title="Reserved Beds"
-                    value={String(inventory.reserved_beds)}
-                    subtitle="Currently reserved"
-                  />
-
-                  <StatCard
-                    title="Reserved ICU"
-                    value={String(inventory.reserved_icu_beds)}
-                    subtitle="Currently reserved"
-                  />
+            <div className="mt-6 grid grid-cols-1 gap-6 md:grid-cols-2">
+              {/* General Ward Capacity */}
+              <div className="rounded-xl border border-slate-800 bg-slate-950 p-5 space-y-4">
+                <div className="flex items-center justify-between">
+                  <span className="text-sm font-bold text-white">General Inpatient Ward</span>
+                  <span className="rounded-full bg-blue-500/10 px-2.5 py-0.5 text-xs font-semibold text-blue-400 border border-blue-500/20">
+                    Standard Care
+                  </span>
                 </div>
 
-                <div className="mt-6 rounded-2xl border border-slate-800 bg-slate-900 p-6">
-                  <h3 className="text-lg font-semibold">
-                    Inventory Summary
-                  </h3>
-
-                  <div className="mt-4 grid gap-4 sm:grid-cols-2">
-                    <InfoItem
-                      label="Hospital ID"
-                      value={inventory.hospital_id}
-                    />
-
-                    <InfoItem
-                      label="Total Available Capacity"
-                      value={String(
-                        inventory.available_beds +
-                          inventory.available_icu_beds
-                      )}
-                    />
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="rounded-lg bg-slate-900 p-3.5">
+                    <p className="text-[11px] text-slate-400 uppercase">Available Beds</p>
+                    <p className="mt-1 text-2xl font-bold text-emerald-400">
+                      {inventory?.available_beds ?? 0}
+                    </p>
+                  </div>
+                  <div className="rounded-lg bg-slate-900 p-3.5">
+                    <p className="text-[11px] text-slate-400 uppercase">Reserved In Transit</p>
+                    <p className="mt-1 text-2xl font-bold text-amber-400">
+                      {inventory?.reserved_beds ?? 0}
+                    </p>
                   </div>
                 </div>
-              </>
-            )}
+
+                <p className="text-[11px] text-slate-400 leading-relaxed">
+                  Beds in the reserved state are held during active patient transfer and automatically released back to available inventory upon referral completion.
+                </p>
+              </div>
+
+              {/* ICU Ward Capacity */}
+              <div className="rounded-xl border border-slate-800 bg-slate-950 p-5 space-y-4">
+                <div className="flex items-center justify-between">
+                  <span className="text-sm font-bold text-white">Intensive Care Unit (ICU)</span>
+                  <span className="rounded-full bg-rose-500/10 px-2.5 py-0.5 text-xs font-semibold text-rose-400 border border-rose-500/20">
+                    Critical Care
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="rounded-lg bg-slate-900 p-3.5">
+                    <p className="text-[11px] text-slate-400 uppercase">Available ICU</p>
+                    <p className="mt-1 text-2xl font-bold text-emerald-400">
+                      {inventory?.available_icu_beds ?? 0}
+                    </p>
+                  </div>
+                  <div className="rounded-lg bg-slate-900 p-3.5">
+                    <p className="text-[11px] text-slate-400 uppercase">Reserved ICU</p>
+                    <p className="mt-1 text-2xl font-bold text-amber-400">
+                      {inventory?.reserved_icu_beds ?? 0}
+                    </p>
+                  </div>
+                </div>
+
+                <p className="text-[11px] text-slate-400 leading-relaxed">
+                  Zero double-booking guarantee: ICU beds are acquired atomically via SQL transactions (<code className="text-blue-300">SELECT FOR UPDATE</code>) when an inbound referral is accepted.
+                </p>
+              </div>
+            </div>
           </div>
-        )}
+        </div>
+      )}
 
-                {activeTab === "patients" && (
-          <section>
+      {/* ============================================================ */}
+      {/* TAB 4: ADMITTED PATIENTS */}
+      {/* ============================================================ */}
+      {activeTab === "patients" && (
+        <div className="space-y-6">
+          <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+            <div>
+              <h3 className="text-base font-bold text-white">Hospital Inpatient Registry</h3>
+              <p className="text-xs text-slate-400">
+                Patients admitted under local care available for network transfer
+              </p>
+            </div>
+            <button
+              onClick={loadPatients}
+              disabled={patientLoading}
+              className="rounded-xl border border-slate-700 bg-slate-800 px-3 py-1.5 text-xs font-semibold text-slate-300 hover:bg-slate-700 transition"
+            >
+              {patientLoading ? "Refreshing..." : "Refresh Patients"}
+            </button>
+          </div>
 
-            <div className="flex flex-col justify-between gap-4 md:flex-row md:items-center">
+          {patientError && (
+            <ErrorState title="Patient Directory Notice" message={patientError} onRetry={loadPatients} />
+          )}
+
+          <DataTable
+            columns={patientColumns}
+            data={patients}
+            keyExtractor={(p) => p.patient_id}
+            loading={patientLoading}
+            searchPlaceholder="Search Patient ID, Name, or Disease..."
+            searchFilterKeys={["patient_id", "name", "disease"]}
+            emptyTitle="No Patients Found"
+            emptyDescription="No inpatient records currently registered in this hospital's active admission database."
+            pageSize={8}
+          />
+        </div>
+      )}
+
+      {/* ============================================================ */}
+      {/* MODAL: DISPATCH AMBULANCE */}
+      {/* ============================================================ */}
+      <ConfirmationModal
+        isOpen={Boolean(dispatchModalReferral)}
+        onClose={() => setDispatchModalReferral(null)}
+        onConfirm={confirmDispatch}
+        title="Dispatch Emergency Transport Ambulance"
+        description={`Initiate ambulance transfer for Case ${dispatchModalReferral?.referral_id}. Sets status to IN_TRANSIT.`}
+        confirmLabel="Confirm & Dispatch Ambulance"
+        variant="primary"
+        loading={statusLoading}
+      >
+        <div className="space-y-3.5">
+          <div>
+            <label className="block text-xs font-semibold text-slate-300">
+              Assigned Ambulance Vehicle ID
+            </label>
+            <input
+              type="text"
+              value={dispatchAmbulanceId}
+              onChange={(e) => setDispatchAmbulanceId(e.target.value)}
+              placeholder="e.g. AMB-108-ADVANCED"
+              className="mt-1 w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-white outline-none focus:border-blue-500"
+            />
+          </div>
+
+          <div>
+            <label className="block text-xs font-semibold text-slate-300">
+              Estimated Transit Duration (Minutes)
+            </label>
+            <input
+              type="number"
+              min={1}
+              value={dispatchEtaMinutes}
+              onChange={(e) => setDispatchEtaMinutes(Number(e.target.value))}
+              className="mt-1 w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-white outline-none focus:border-blue-500"
+            />
+          </div>
+
+          <div>
+            <label className="block text-xs font-semibold text-slate-300">
+              Paramedic / En-Route Clinical Notes
+            </label>
+            <textarea
+              rows={2}
+              value={dispatchNotes}
+              onChange={(e) => setDispatchNotes(e.target.value)}
+              placeholder="Oxygen supported, vitals stable, IV line active..."
+              className="mt-1 w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-white outline-none focus:border-blue-500"
+            />
+          </div>
+        </div>
+      </ConfirmationModal>
+
+      {/* ============================================================ */}
+      {/* MODAL: REJECT REFERRAL */}
+      {/* ============================================================ */}
+      <ConfirmationModal
+        isOpen={Boolean(rejectModalReferral)}
+        onClose={() => setRejectModalReferral(null)}
+        onConfirm={confirmReject}
+        title="Decline Inbound Patient Referral"
+        description={`Specify clinical justification for declining Case ${rejectModalReferral?.referral_id}.`}
+        confirmLabel="Decline Referral"
+        variant="danger"
+        loading={statusLoading}
+      >
+        <div>
+          <label className="block text-xs font-semibold text-slate-300">
+            Rejection Clinical Reason / Capacity Constraint *
+          </label>
+          <textarea
+            rows={3}
+            value={rejectReason}
+            onChange={(e) => setRejectReason(e.target.value)}
+            placeholder="e.g. No ventilator beds available; emergency surgery at capacity; redirect to regional tertiary center."
+            className="mt-1 w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-white outline-none focus:border-rose-500"
+          />
+        </div>
+      </ConfirmationModal>
+
+      {/* ============================================================ */}
+      {/* MODAL: REFERRAL TIMELINE VIEW */}
+      {/* ============================================================ */}
+      {selectedReferralForTimeline && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-fade-in">
+          <div className="w-full max-w-2xl max-h-[90vh] overflow-y-auto rounded-2xl border border-slate-800 bg-slate-900 p-6 shadow-2xl">
+            <div className="flex items-center justify-between pb-4 border-b border-slate-800">
+              <h3 className="text-base font-bold text-white">
+                Detailed Referral Audit Trail
+              </h3>
+              <button
+                onClick={() => setSelectedReferralForTimeline(null)}
+                className="rounded-lg p-1 text-slate-400 hover:text-white"
+              >
+                ✕
+              </button>
+            </div>
+            <div className="mt-4">
+              <ReferralTimeline referral={selectedReferralForTimeline} />
+            </div>
+            <div className="mt-6 flex justify-end">
+              <button
+                onClick={() => setSelectedReferralForTimeline(null)}
+                className="rounded-xl border border-slate-700 bg-slate-800 px-4 py-2 text-xs font-semibold text-slate-200 hover:bg-slate-700"
+              >
+                Close Audit View
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ============================================================ */}
+      {/* MODAL: CREATE REFERRAL WITH AI RECOMMENDATIONS */}
+      {/* ============================================================ */}
+      {referralModalPatient && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-fade-in">
+          <div className="w-full max-w-3xl max-h-[90vh] overflow-y-auto rounded-2xl border border-slate-800 bg-slate-900 p-6 shadow-2xl space-y-5">
+            {/* Modal Header */}
+            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+              <div>
+                <h3 className="text-base font-bold text-white">
+                  Initiate Network Patient Referral
+                </h3>
+                <p className="text-xs text-slate-400">
+                  Patient: <span className="text-white font-semibold">{referralModalPatient.name}</span> (
+                  {referralModalPatient.patient_id}) • {referralModalPatient.age}y {referralModalPatient.gender}
+                </p>
+              </div>
+              <button
+                onClick={() => setReferralModalPatient(null)}
+                className="rounded-lg p-1 text-slate-400 hover:text-white"
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* Clinical Decision Support Disclaimer */}
+            <div className="rounded-xl border border-blue-500/30 bg-blue-500/10 p-3 text-xs text-blue-200 flex items-start gap-2.5">
+              <span className="text-sm">ℹ️</span>
+              <div>
+                <span className="font-bold">Clinical Decision Support (CDS) Notice: </span>
+                AI rankings estimate historical capability and bed capacity. Attending physician clinical verification and destination acceptance are required before patient dispatch.
+              </div>
+            </div>
+
+            {/* AI Hospital Recommendations Section */}
+            <div className="space-y-3">
+              <div className="flex items-center justify-between">
+                <h4 className="text-xs font-bold uppercase tracking-wider text-slate-300">
+                  AI-Ranked Eligible Facilities
+                </h4>
+                {recLoading && (
+                  <span className="text-xs text-blue-400 flex items-center gap-1">
+                    <span className="h-3 w-3 animate-spin rounded-full border-2 border-blue-400 border-t-transparent" />
+                    Calculating rankings...
+                  </span>
+                )}
+              </div>
+
+              {recError && <p className="text-xs text-rose-400">{recError}</p>}
+
+              {recommendations.length > 0 ? (
+                <div className="space-y-2 max-h-56 overflow-y-auto pr-1">
+                  {recommendations.slice(0, 5).map((h, i) => {
+                    const isSelected = referralTargetHospitalId === h.hospital_id;
+                    return (
+                      <div
+                        key={h.hospital_id || i}
+                        onClick={() => setReferralTargetHospitalId(h.hospital_id)}
+                        className={`cursor-pointer rounded-xl border p-3 transition ${
+                          isSelected
+                            ? "border-blue-500 bg-blue-950/40 ring-1 ring-blue-500"
+                            : "border-slate-800 bg-slate-950 hover:border-slate-700"
+                        }`}
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="flex items-center gap-2">
+                            <span className="rounded-full bg-blue-500/20 px-2 py-0.5 text-[10px] font-bold text-blue-400">
+                              #{i + 1}
+                            </span>
+                            <span className="text-xs font-bold text-white">
+                              {h.hospital_name || h.name || h.hospital_id}
+                            </span>
+                            <span className="text-[10px] font-mono text-slate-400">
+                              ({h.hospital_id})
+                            </span>
+                          </div>
+
+                          <div className="flex items-center gap-3 text-xs">
+                            <span className="text-slate-400">
+                              {formatDistance(h.distance_km)}
+                            </span>
+                            <span className="text-emerald-400 font-semibold">
+                              {h.available_icu_beds} ICU Beds
+                            </span>
+                            <span className="rounded bg-slate-800 px-1.5 py-0.5 text-[10px] text-blue-300 font-mono">
+                              Fit: {formatModelFitScore(h.success_probability)}
+                            </span>
+                          </div>
+                        </div>
+
+                        {h.reasons && h.reasons.length > 0 && (
+                          <p className="mt-1.5 text-[11px] text-slate-400 line-clamp-1">
+                            ✓ {h.reasons.join(" • ")}
+                          </p>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                !recLoading && (
+                  <p className="text-xs text-slate-500 italic">
+                    Enter hospital ID manually or reload AI rankings.
+                  </p>
+                )
+              )}
+            </div>
+
+            {/* Referral Form Fields */}
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-3 pt-2 border-t border-slate-800">
+              <div>
+                <label className="block text-xs font-semibold text-slate-300">
+                  Target Destination Hospital ID *
+                </label>
+                <input
+                  type="text"
+                  value={referralTargetHospitalId}
+                  onChange={(e) => setReferralTargetHospitalId(e.target.value.toUpperCase())}
+                  placeholder="e.g. GH00119"
+                  className="mt-1 w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-white font-mono outline-none focus:border-blue-500"
+                />
+              </div>
 
               <div>
-                <h2 className="text-2xl font-bold">
-                  Patient Management
-                </h2>
-
-                <p className="mt-1 text-sm text-slate-400">
-                  View and manage patients currently associated with this hospital.
-                </p>
+                <label className="block text-xs font-semibold text-slate-300">
+                  Required Bed Type
+                </label>
+                <select
+                  value={referralBedType}
+                  onChange={(e) => setReferralBedType(e.target.value as any)}
+                  className="mt-1 w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-white outline-none focus:border-blue-500"
+                >
+                  <option value="GENERAL">General Inpatient Bed</option>
+                  <option value="ICU">Intensive Care Unit (ICU)</option>
+                  <option value="EMERGENCY">Emergency / Trauma Bed</option>
+                </select>
               </div>
 
-              <button
-                onClick={loadPatients}
-                disabled={patientLoading}
-                className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                {patientLoading
-                  ? "Loading..."
-                  : "Refresh Patients"}
-              </button>
-
+              <div>
+                <label className="block text-xs font-semibold text-slate-300">
+                  Clinical Priority
+                </label>
+                <select
+                  value={referralPriority}
+                  onChange={(e) => setReferralPriority(e.target.value)}
+                  className="mt-1 w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-white outline-none focus:border-blue-500"
+                >
+                  <option value="Critical">Critical (Immediate Transfer)</option>
+                  <option value="Urgent">Urgent (&lt; 2 Hours)</option>
+                  <option value="Stable">Stable Elective Transfer</option>
+                </select>
+              </div>
             </div>
-
-            {patientError && (
-              <div className="mt-6 rounded-xl border border-red-500/30 bg-red-500/10 p-4 text-sm text-red-400">
-                {patientError}
-              </div>
-            )}
-
-            {patientLoading && patients.length === 0 && (
-              <div className="mt-6 rounded-xl border border-slate-800 bg-slate-900 p-6 text-slate-400">
-                Loading patients...
-              </div>
-            )}
-
-            {!patientLoading &&
-              !patientError &&
-              patients.length === 0 && (
-                <div className="mt-6 rounded-xl border border-slate-800 bg-slate-900 p-6 text-slate-400">
-                  No patients found for this hospital.
-                </div>
-              )}
-
-            {patients.length > 0 && (
-              <div className="mt-6 grid gap-4 lg:grid-cols-2">
-
-                {patients.map((patient) => (
-
-                  <div
-                    key={patient.visit_id}
-                    className="rounded-2xl border border-slate-800 bg-slate-900 p-5"
-                  >
-
-                    <div className="flex items-start justify-between gap-4">
-
-                      <div>
-                        <p className="text-lg font-bold">
-                          {patient.name}
-                        </p>
-
-                        <p className="mt-1 text-sm text-slate-400">
-                          {patient.patient_id}
-                        </p>
-                      </div>
-
-                      <span className="rounded-full bg-slate-800 px-3 py-1 text-xs font-semibold text-slate-300">
-                        {patient.status}
-                      </span>
-
-                    </div>
-
-                    <div className="mt-5 grid grid-cols-2 gap-4 text-sm">
-
-                      <div>
-                        <p className="text-slate-500">
-                          Age / Gender
-                        </p>
-
-                        <p className="mt-1 font-semibold">
-                          {patient.age} / {patient.gender}
-                        </p>
-                      </div>
-
-                      <div>
-                        <p className="text-slate-500">
-                          Priority
-                        </p>
-
-                        <p className="mt-1 font-semibold">
-                          {patient.priority}
-                        </p>
-                      </div>
-
-                      <div>
-                        <p className="text-slate-500">
-                          Disease
-                        </p>
-
-                        <p className="mt-1 font-semibold">
-                          {patient.disease}
-                        </p>
-                      </div>
-
-                      <div>
-                        <p className="text-slate-500">
-                          ICU Required
-                        </p>
-
-                        <p className="mt-1 font-semibold">
-                          {patient.icu_required}
-                        </p>
-                      </div>
-
-                      <div>
-                        <p className="text-slate-500">
-                          Admission Type
-                        </p>
-
-                        <p className="mt-1 font-semibold">
-                          {patient.admission_type}
-                        </p>
-                      </div>
-
-                      <div>
-                        <p className="text-slate-500">
-                          Admitted
-                        </p>
-
-                        <p className="mt-1 font-semibold">
-                          {new Date(
-                            patient.admitted_at
-                          ).toLocaleString()}
-                        </p>
-                      </div>
-
-                    </div>
-
-                  </div>
-
-                ))}
-
-              </div>
-            )}
-
-          </section>
-        )}
-
-      </div>
-
-    </main>
-  );
-}
-
-function StatCard({
-  title,
-  value,
-  subtitle,
-}: {
-  title: string;
-  value: string;
-  subtitle: string;
-}) {
-  return (
-    <div className="rounded-2xl border border-slate-800 bg-slate-900 p-5">
-
-      <p className="text-sm text-slate-400">
-        {title}
-      </p>
-
-      <p className="mt-2 text-3xl font-bold">
-        {value}
-      </p>
-
-      <p className="mt-1 text-xs text-slate-500">
-        {subtitle}
-      </p>
-
-    </div>
-  );
-}
-
-function InventoryCard({
-  title,
-  available,
-  reserved,
-}: {
-  title: string;
-  available: number;
-  reserved: number;
-}) {
-  const total = available + reserved;
-
-  const occupancy =
-    total > 0
-      ? Math.round((reserved / total) * 100)
-      : 0;
-
-  return (
-    <div className="rounded-xl bg-slate-950 p-5">
-
-      <div className="flex items-center justify-between">
-
-        <p className="font-semibold">
-          {title}
-        </p>
-
-        <span className="text-sm text-slate-400">
-          {occupancy}% reserved
-        </span>
-
-      </div>
-
-      <div className="mt-4 h-3 overflow-hidden rounded-full bg-slate-800">
-
-        <div
-          className="h-full rounded-full bg-blue-500 transition-all"
-          style={{
-            width: `${occupancy}%`,
-          }}
-        />
-
-      </div>
-
-      <div className="mt-4 grid grid-cols-2 gap-3">
-
-        <div>
-          <p className="text-xs text-slate-500">
-            Available
-          </p>
-
-          <p className="mt-1 text-xl font-bold text-emerald-400">
-            {available}
-          </p>
-        </div>
-
-        <div>
-          <p className="text-xs text-slate-500">
-            Reserved
-          </p>
-
-          <p className="mt-1 text-xl font-bold">
-            {reserved}
-          </p>
-        </div>
-
-      </div>
-
-    </div>
-  );
-}
-
-function ReferralTimeline({
-  referral,
-}: {
-  referral: Referral;
-}) {
-  const events = [
-    ["Referral Created", referral.created_at],
-    ["Accepted", referral.accepted_at],
-    ["In Transit", referral.in_transit_at],
-    ["Arrived", referral.arrived_at],
-    ["Treatment Started", referral.treatment_started_at],
-    ["Completed", referral.completed_at],
-    ["Closed", referral.closed_at],
-  ];
-
-  return (
-    <div className="mt-6 rounded-xl border border-slate-800 bg-slate-950 p-5">
-      <h4 className="text-lg font-semibold">
-        Referral Timeline
-      </h4>
-
-      <div className="mt-5 space-y-4">
-        {events.map(([label, timestamp]) => (
-          <div
-            key={label}
-            className="flex items-start gap-3"
-          >
-            <div
-              className={`mt-1 h-3 w-3 rounded-full ${
-                timestamp
-                  ? "bg-emerald-400"
-                  : "bg-slate-700"
-              }`}
-            />
 
             <div>
-              <p
-                className={`text-sm font-semibold ${
-                  timestamp
-                    ? "text-white"
-                    : "text-slate-600"
-                }`}
-              >
-                {label}
-              </p>
+              <label className="block text-xs font-semibold text-slate-300">
+                Clinical Referral Indication & Reason
+              </label>
+              <textarea
+                rows={2}
+                value={referralReason}
+                onChange={(e) => setReferralReason(e.target.value)}
+                className="mt-1 w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-white outline-none focus:border-blue-500"
+              />
+            </div>
 
-              {timestamp && (
-                <p className="mt-1 text-xs text-slate-500">
-                  {new Date(
-                    timestamp
-                  ).toLocaleString("en-IN")}
-                </p>
-              )}
+            {createReferralError && (
+              <p className="text-xs text-rose-400 font-semibold">{createReferralError}</p>
+            )}
+
+            {createReferralSuccess && (
+              <p className="text-xs text-emerald-400 font-semibold">{createReferralSuccess}</p>
+            )}
+
+            <div className="flex items-center justify-end gap-3 pt-3 border-t border-slate-800">
+              <button
+                type="button"
+                onClick={() => setReferralModalPatient(null)}
+                disabled={createReferralLoading}
+                className="rounded-xl border border-slate-700 bg-slate-800 px-4 py-2 text-xs font-semibold text-slate-300 hover:bg-slate-700"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={submitCreateReferral}
+                disabled={createReferralLoading || !referralTargetHospitalId.trim()}
+                className="rounded-xl bg-blue-600 px-5 py-2 text-xs font-semibold text-white hover:bg-blue-500 transition disabled:opacity-50 flex items-center gap-2"
+              >
+                {createReferralLoading && (
+                  <span className="h-3 w-3 animate-spin rounded-full border-2 border-white border-t-transparent" />
+                )}
+                <span>{createReferralLoading ? "Submitting..." : "Submit Referral"}</span>
+              </button>
             </div>
           </div>
-        ))}
-      </div>
-    </div>
-  );
-}
+        </div>
+      )}
 
-function InfoItem({
-  label,
-  value,
-}: {
-  label: string;
-  value: string;
-}) {
-  return (
-    <div className="rounded-xl bg-slate-950 p-4">
+      {/* ============================================================ */}
+      {/* DRAWER: PATIENT REFERRAL HISTORY */}
+      {/* ============================================================ */}
+      {selectedPatientForHistory && (
+        <div className="fixed inset-0 z-50 flex items-center justify-end bg-black/75 backdrop-blur-sm animate-fade-in">
+          <div className="h-full w-full max-w-xl overflow-y-auto border-l border-slate-800 bg-slate-900 p-6 shadow-2xl space-y-5">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+              <div>
+                <h3 className="text-base font-bold text-white">
+                  Patient Network Referral History
+                </h3>
+                <p className="text-xs text-slate-400">
+                  {selectedPatientForHistory.name} ({selectedPatientForHistory.patient_id})
+                </p>
+              </div>
+              <button
+                onClick={() => setSelectedPatientForHistory(null)}
+                className="rounded-lg p-1 text-slate-400 hover:text-white"
+              >
+                ✕
+              </button>
+            </div>
 
-      <p className="text-xs text-slate-500">
-        {label}
-      </p>
-
-      <p className="mt-1 font-semibold">
-        {value}
-      </p>
-
-    </div>
-  );
-}
-
-function Placeholder({
-  title,
-  text,
-}: {
-  title: string;
-  text: string;
-}) {
-  return (
-    <div>
-
-      <h2 className="text-2xl font-bold">
-        {title}
-      </h2>
-
-      <div className="mt-6 rounded-2xl border border-slate-800 bg-slate-900 p-8 text-center">
-
-        <p className="text-slate-400">
-          {text}
-        </p>
-
-      </div>
-
-    </div>
+            {patientReferralLoading ? (
+              <LoadingState message="Fetching patient referral history..." />
+            ) : patientReferrals.length === 0 ? (
+              <EmptyState
+                title="No Network Transfer Records"
+                description="This patient has no recorded referral transfers between network facilities."
+              />
+            ) : (
+              <div className="space-y-4">
+                {patientReferrals.map((ref) => (
+                  <div key={ref.referral_id} className="rounded-xl border border-slate-800 bg-slate-950 p-4">
+                    <div className="flex items-center justify-between">
+                      <span className="font-mono text-xs font-bold text-blue-400">
+                        {ref.referral_id}
+                      </span>
+                      <StatusBadge status={ref.status} size="sm" />
+                    </div>
+                    <div className="mt-2 text-xs text-slate-400 space-y-1">
+                      <p>
+                        From: <span className="text-slate-200">{ref.from_hospital_id}</span> → To:{" "}
+                        <span className="text-slate-200">{ref.to_hospital_id}</span>
+                      </p>
+                      <p>Priority: {ref.priority} • Bed: {ref.bed_type || "ICU"}</p>
+                      <p>Reason: {ref.reason}</p>
+                      <p className="text-[10px] text-slate-400 pt-1">
+                        Initiated: {formatDateTime(ref.created_at)}
+                      </p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </DashboardLayout>
   );
 }
