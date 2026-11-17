@@ -104,10 +104,10 @@ def get_engine():
     if _ENGINE is None:
         db_url = get_database_url()
         if is_postgres():
-            pool_size = int(os.getenv("SIH_DB_POOL_SIZE", "10"))
-            max_overflow = int(os.getenv("SIH_DB_MAX_OVERFLOW", "20"))
-            pool_timeout = int(os.getenv("SIH_DB_POOL_TIMEOUT", "30"))
-            pool_recycle = int(os.getenv("SIH_DB_POOL_RECYCLE", "1800"))
+            pool_size = int(os.getenv("DB_POOL_SIZE") or os.getenv("SIH_DB_POOL_SIZE", "10"))
+            max_overflow = int(os.getenv("DB_MAX_OVERFLOW") or os.getenv("SIH_DB_MAX_OVERFLOW", "5"))
+            pool_timeout = int(os.getenv("DB_POOL_TIMEOUT") or os.getenv("SIH_DB_POOL_TIMEOUT", "30"))
+            pool_recycle = int(os.getenv("DB_POOL_RECYCLE") or os.getenv("SIH_DB_POOL_RECYCLE", "1800"))
 
             _ENGINE = create_engine(
                 db_url,
@@ -195,6 +195,46 @@ def check_db_health() -> Dict[str, Any]:
         }
 
 
+def get_pool_stats() -> dict:
+    """
+    Returns SQLAlchemy connection pool runtime statistics.
+    Safe to call frequently; does not create new connections.
+    Returns empty dict if pool is not available or not a QueuePool.
+    """
+    global _ENGINE
+    if _ENGINE is None:
+        return {"available": False, "reason": "engine_not_initialized"}
+
+    pool = _ENGINE.pool
+    # QueuePool exposes: size(), checkedin(), checkedout(), overflow()
+    # StaticPool (SQLite test) does not — guard with hasattr
+    stats = {"pool_type": type(pool).__name__}
+    try:
+        pool_size = pool.size() if hasattr(pool, 'size') else None
+        checked_in = pool.checkedin() if hasattr(pool, 'checkedin') else None
+        checked_out = pool.checkedout() if hasattr(pool, 'checkedout') else None
+        overflow = pool.overflow() if hasattr(pool, 'overflow') else None
+
+        stats["pool_size"] = pool_size
+        stats["checked_in"] = checked_in
+        stats["checked_out"] = checked_out
+        stats["overflow"] = overflow
+
+        # Utilization: checked_out / (pool_size + max(overflow, 0))
+        if pool_size is not None and checked_out is not None:
+            effective_max = pool_size + (max(overflow, 0) if overflow is not None else 0)
+            stats["utilization_pct"] = round(100.0 * checked_out / effective_max, 1) if effective_max > 0 else 0.0
+        else:
+            stats["utilization_pct"] = None
+
+        stats["available"] = True
+    except Exception as e:
+        stats["available"] = False
+        stats["error"] = str(e)
+
+    return stats
+
+
 def validate_production_database_config():
     """
     Startup invariant check: validates that production has a healthy PostgreSQL
@@ -232,7 +272,22 @@ def get_referral_repository(session: Optional[Session] = None) -> PgReferralRepo
     """
     Return a PgReferralRepository bound to the given session or a newly created session.
     """
+    owns_session = False
     if session is None:
         factory = get_session_factory()
         session = factory()
-    return PgReferralRepository(session)
+        owns_session = True
+    repo = PgReferralRepository(session)
+    repo._owns_session = owns_session
+    return repo
+
+
+def get_registration_service(session: Optional[Session] = None):
+    """
+    Return a RegistrationService bound to the given session or a newly created session.
+    """
+    from src.services.registration_service import RegistrationService
+    if session is None:
+        factory = get_session_factory()
+        session = factory()
+    return RegistrationService(session)

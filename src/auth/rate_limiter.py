@@ -29,6 +29,7 @@ WINDOW_SECONDS = int(os.getenv("SIH_LOGIN_WINDOW_SECONDS", "60"))
 # In-memory sliding-window store: key -> list of failure timestamps
 _IN_MEMORY_FAILURES: dict[str, list[float]] = defaultdict(list)
 _IN_MEMORY_REVOKED_TOKENS: dict[str, float] = {}  # token_hash -> expiry_ts
+_IN_MEMORY_USER_REVOCATIONS: dict[str, float] = {}  # user_id/username -> cutoff_timestamp
 _RATE_LIMIT_LOCK = Lock()
 
 # Redis singleton state
@@ -584,15 +585,88 @@ def is_token_revoked(token: str) -> bool:
 
 
 def reset_blocklist() -> None:
-    """Clear all blocklisted tokens. Used for testing teardown."""
+    """Clear all blocklisted tokens and session revocations. Used for testing teardown."""
     try:
         redis_client = _get_redis_client()
         if redis_client is not None:
             keys = redis_client.keys("sih:jwt:blocklist:*")
-            if keys:
-                redis_client.delete(*keys)
+            user_keys = redis_client.keys("sih:jwt:user_revoked:*")
+            all_keys = list(keys) + list(user_keys)
+            if all_keys:
+                redis_client.delete(*all_keys)
     except Exception:
         pass
 
     with _RATE_LIMIT_LOCK:
         _IN_MEMORY_REVOKED_TOKENS.clear()
+        _IN_MEMORY_USER_REVOCATIONS.clear()
+
+
+def revoke_user_sessions(user_id: str, window_seconds: int = 86400) -> bool:
+    """
+    Revoke all existing JWT sessions for a user by setting a revocation cutoff timestamp.
+    Any token issued prior to this cutoff will be rejected as revoked.
+    """
+    now = int(time.time())
+    normalized_id = str(user_id).strip()
+
+    redis_client = _get_redis_client()
+    if redis_client is not None:
+        try:
+            redis_key = f"sih:jwt:user_revoked:{normalized_id}"
+            redis_client.set(redis_key, str(now), ex=window_seconds)
+            log_security_event("USER_SESSIONS_REVOKED", {
+                "user_id": normalized_id,
+                "cutoff_ts": now,
+                "ttl_seconds": window_seconds,
+            })
+            return True
+        except Exception as e:
+            if is_production():
+                raise RuntimeError(f"Production Redis user session revocation error: {e}")
+            logger.error("Redis revoke_user_sessions failed (%s). Using in-memory store.", e)
+
+    with _RATE_LIMIT_LOCK:
+        _IN_MEMORY_USER_REVOCATIONS[normalized_id] = now
+        log_security_event("USER_SESSIONS_REVOKED", {
+            "user_id": normalized_id,
+            "cutoff_ts": now,
+            "backend": "in_memory",
+        })
+    return True
+
+
+def is_user_session_revoked(user_id: str, token_iat: Optional[float | int | datetime]) -> bool:
+    """
+    Check if a token was issued prior to user's latest session revocation timestamp.
+    Returns True if token_iat < cutoff_ts.
+    """
+    if not user_id or token_iat is None:
+        return False
+
+    if isinstance(token_iat, datetime):
+        iat_ts = int(token_iat.timestamp())
+    else:
+        iat_ts = int(token_iat)
+
+    normalized_id = str(user_id).strip()
+
+    redis_client = _get_redis_client()
+    if redis_client is not None:
+        try:
+            redis_key = f"sih:jwt:user_revoked:{normalized_id}"
+            val = redis_client.get(redis_key)
+            if val is not None:
+                cutoff_ts = int(float(val))
+                return iat_ts < cutoff_ts
+            return False
+        except Exception as e:
+            if is_production():
+                raise RuntimeError(f"Production Redis user revocation check error: {e}")
+            logger.error("Redis is_user_session_revoked check failed (%s). Checking in-memory.", e)
+
+    with _RATE_LIMIT_LOCK:
+        cutoff_ts = _IN_MEMORY_USER_REVOCATIONS.get(normalized_id)
+        if cutoff_ts is not None:
+            return iat_ts < int(cutoff_ts)
+    return False

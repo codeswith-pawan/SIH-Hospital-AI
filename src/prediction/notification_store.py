@@ -114,30 +114,50 @@ def get_hospital_notifications(
     hospital_id: str,
     unread_only: bool = False,
     limit: int = 50,
+    page: int = 1,
+    page_size: Optional[int] = None,
+    event_category: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Retrieve notifications for a hospital."""
+    """Retrieve notifications for a hospital with unread count, pagination, and category filtering."""
     from src.database.db_manager import is_postgres, get_referral_repository
 
     if is_postgres():
         try:
             repo = get_referral_repository()
-            return repo.get_hospital_notifications(hospital_id, unread_only=unread_only, limit=limit)
+            return repo.get_hospital_notifications(
+                hospital_id=hospital_id,
+                unread_only=unread_only,
+                limit=limit,
+                page=page,
+                page_size=page_size,
+                event_category=event_category,
+            )
         except Exception as e:
             logger.error("Failed to read notifications from PostgreSQL (%s). Using fallback.", e)
 
     data = _load_json_notifications()
     all_notifs = data.get(hospital_id, [])
+    filtered = all_notifs
     if unread_only:
-        filtered = [n for n in all_notifs if not n.get("is_read", False)]
-    else:
-        filtered = all_notifs
+        filtered = [n for n in filtered if not n.get("is_read", False)]
+
+    if event_category:
+        cat = event_category.lower().strip()
+        filtered = [n for n in filtered if cat in (n.get("event_type") or "").lower()]
+
+    effective_limit = page_size if page_size is not None else limit
+    start = (page - 1) * effective_limit if page > 1 else 0
+    paged = filtered[start:start + effective_limit]
 
     unread_count = sum(1 for n in all_notifs if not n.get("is_read", False))
     return {
         "hospital_id": hospital_id,
         "unread_count": unread_count,
-        "total_returned": len(filtered[:limit]),
-        "notifications": filtered[:limit],
+        "total_count": len(filtered),
+        "total_returned": len(paged),
+        "page": page,
+        "page_size": effective_limit,
+        "notifications": paged,
     }
 
 

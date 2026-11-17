@@ -306,6 +306,27 @@ def test_safe_acceptance_failure_on_zero_beds(auth_headers_hosp_a, auth_headers_
         # Restore original bed inventory for Hospital B
         if inv_backup:
             save_hospital_inventory(inv_backup)
+            from src.database.db_manager import is_postgres, get_referral_repository
+            if is_postgres():
+                from src.database.pg_models import Bed
+                from sqlalchemy import update
+                repo = get_referral_repository()
+                repo.initialize_or_reset_inventory(
+                    hospital_id=HOSPITAL_B,
+                    available_beds=169,
+                    available_icu_beds=22,
+                    available_emergency_beds=0,
+                    reset=True,
+                )
+                repo.session.execute(
+                    update(Bed)
+                    .where(
+                        Bed.hospital_id == HOSPITAL_B,
+                        Bed.bed_number.in_(["ICU-001", "ICU-002", "ICU-003", "ICU-004", "ICU-005", "ICU-007"])
+                    )
+                    .values(status="RESERVED")
+                )
+                repo.session.commit()
 
 
 # ============================================================

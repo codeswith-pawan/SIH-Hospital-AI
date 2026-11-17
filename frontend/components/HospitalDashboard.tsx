@@ -11,6 +11,8 @@ import {
 } from "@/lib/types";
 import {
   apiGetInventory,
+  apiUpdateInventory,
+  apiUpdateResources,
   apiGetHospitalReferrals,
   apiUpdateReferralStatus,
   apiGetNotifications,
@@ -94,6 +96,20 @@ export default function HospitalDashboard({ user }: HospitalDashboardProps) {
   const [createReferralError, setCreateReferralError] = useState("");
   const [createReferralSuccess, setCreateReferralSuccess] = useState("");
 
+  // Bed & Resource Capacity Management State
+  const [capacityModalOpen, setCapacityModalOpen] = useState(false);
+  const [capGeneral, setCapGeneral] = useState(0);
+  const [capICU, setCapICU] = useState(0);
+  const [capEmergency, setCapEmergency] = useState(0);
+  const [resOxygen, setResOxygen] = useState("Yes");
+  const [resVentilator, setResVentilator] = useState("Yes");
+  const [resAmbulance, setResAmbulance] = useState("Yes");
+  const [resBloodBank, setResBloodBank] = useState("Yes");
+  const [resEmergency24x7, setResEmergency24x7] = useState("Yes");
+  const [capSaving, setCapSaving] = useState(false);
+  const [capModalError, setCapModalError] = useState("");
+  const [capModalSuccess, setCapModalSuccess] = useState("");
+
   const hospitalId = user.hospital_id || "GH00046";
 
   // Data Loaders
@@ -102,18 +118,88 @@ export default function HospitalDashboard({ user }: HospitalDashboardProps) {
     setInventoryError("");
     try {
       const data = await apiGetInventory(hospitalId);
-      const invData = data.inventory || data;
+      const invData = (data.inventory || data) as BedInventory;
       setInventory({
+        ...invData,
         hospital_id: invData.hospital_id || hospitalId,
         available_beds: Number(invData.available_beds ?? 0),
         available_icu_beds: Number(invData.available_icu_beds ?? 0),
         reserved_beds: Number(invData.reserved_beds ?? 0),
         reserved_icu_beds: Number(invData.reserved_icu_beds ?? 0),
+        total_beds: Number(invData.total_beds ?? invData.total_general_beds ?? 0),
+        total_general_beds: Number(invData.total_general_beds ?? invData.total_beds ?? 0),
+        total_icu_beds: Number(invData.total_icu_beds ?? 0),
+        total_emergency_beds: Number(invData.total_emergency_beds ?? 0),
+        available_emergency_beds: Number(invData.available_emergency_beds ?? 0),
+        reserved_emergency_beds: Number(invData.reserved_emergency_beds ?? 0),
+        occupied_emergency_beds: Number(invData.occupied_emergency_beds ?? 0),
+        total_available_beds: Number(invData.total_available_beds ?? 0),
+        total_reserved_beds: Number(invData.total_reserved_beds ?? 0),
+        total_occupied_beds: Number(invData.total_occupied_beds ?? 0),
+        total_capacity: Number(invData.total_capacity ?? 0),
+        oxygen_support: invData.oxygen_support || "Yes",
+        ventilator: invData.ventilator || "Yes",
+        ambulance: invData.ambulance || "Yes",
+        blood_bank: invData.blood_bank || "Yes",
+        emergency_24x7: invData.emergency_24x7 || "Yes",
       });
     } catch (err: any) {
       setInventoryError(err.message || "Failed to load hospital bed inventory.");
     } finally {
       setInventoryLoading(false);
+    }
+  };
+
+  const openCapacityModal = () => {
+    setCapModalError("");
+    setCapModalSuccess("");
+    const genTotal = inventory?.total_general_beds ?? inventory?.total_beds ?? 0;
+    const icuTotal = inventory?.total_icu_beds ?? 0;
+    const emgTotal = inventory?.total_emergency_beds ?? 0;
+    setCapGeneral(genTotal);
+    setCapICU(icuTotal);
+    setCapEmergency(emgTotal);
+    setResOxygen(inventory?.oxygen_support || "Yes");
+    setResVentilator(inventory?.ventilator || "Yes");
+    setResAmbulance(inventory?.ambulance || "Yes");
+    setResBloodBank(inventory?.blood_bank || "Yes");
+    setResEmergency24x7(inventory?.emergency_24x7 || "Yes");
+    setCapacityModalOpen(true);
+  };
+
+  const handleSaveCapacityAndResources = async () => {
+    setCapSaving(true);
+    setCapModalError("");
+    setCapModalSuccess("");
+    try {
+      if (capGeneral < 0 || capICU < 0 || capEmergency < 0) {
+        throw new Error("Bed capacities cannot be negative.");
+      }
+      await apiUpdateInventory(hospitalId, {
+        capacities: [
+          { bed_type: "GENERAL", total_capacity: Number(capGeneral) },
+          { bed_type: "ICU", total_capacity: Number(capICU) },
+          { bed_type: "EMERGENCY", total_capacity: Number(capEmergency) },
+        ],
+      });
+
+      await apiUpdateResources(hospitalId, {
+        oxygen_support: resOxygen,
+        ventilator: resVentilator,
+        ambulance: resAmbulance,
+        blood_bank: resBloodBank,
+        emergency_24x7: resEmergency24x7,
+      });
+
+      setCapModalSuccess("Hospital bed inventory and resources successfully updated in PostgreSQL.");
+      await loadInventory();
+      setTimeout(() => {
+        setCapacityModalOpen(false);
+      }, 1200);
+    } catch (err: any) {
+      setCapModalError(err.message || "Failed to update hospital capacity.");
+    } finally {
+      setCapSaving(false);
     }
   };
 
@@ -737,19 +823,27 @@ export default function HospitalDashboard({ user }: HospitalDashboardProps) {
                   Real-Time Bed Availability & Allocation Matrix
                 </h3>
                 <p className="text-xs text-slate-400">
-                  Backed by transactional PostgreSQL locking and atomic reservation rollback
+                  Authoritative operational telemetry backed by PostgreSQL transactional locks
                 </p>
               </div>
-              <button
-                onClick={loadInventory}
-                disabled={inventoryLoading}
-                className="rounded-xl border border-slate-700 bg-slate-800 px-3 py-1.5 text-xs font-semibold text-slate-200 hover:bg-slate-700 transition"
-              >
-                {inventoryLoading ? "Refreshing..." : "Refresh Inventory"}
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={openCapacityModal}
+                  className="rounded-xl border border-blue-500/30 bg-blue-600/20 px-3 py-1.5 text-xs font-semibold text-blue-300 hover:bg-blue-600/30 transition flex items-center gap-1.5"
+                >
+                  <span>⚙️</span> Update Capacity & Resources
+                </button>
+                <button
+                  onClick={loadInventory}
+                  disabled={inventoryLoading}
+                  className="rounded-xl border border-slate-700 bg-slate-800 px-3 py-1.5 text-xs font-semibold text-slate-200 hover:bg-slate-700 transition"
+                >
+                  {inventoryLoading ? "Refreshing..." : "Refresh Inventory"}
+                </button>
+              </div>
             </div>
 
-            <div className="mt-6 grid grid-cols-1 gap-6 md:grid-cols-2">
+            <div className="mt-6 grid grid-cols-1 gap-6 md:grid-cols-3">
               {/* General Ward Capacity */}
               <div className="rounded-xl border border-slate-800 bg-slate-950 p-5 space-y-4">
                 <div className="flex items-center justify-between">
@@ -759,23 +853,29 @@ export default function HospitalDashboard({ user }: HospitalDashboardProps) {
                   </span>
                 </div>
 
-                <div className="grid grid-cols-2 gap-3">
-                  <div className="rounded-lg bg-slate-900 p-3.5">
-                    <p className="text-[11px] text-slate-400 uppercase">Available Beds</p>
-                    <p className="mt-1 text-2xl font-bold text-emerald-400">
+                <div className="grid grid-cols-3 gap-2">
+                  <div className="rounded-lg bg-slate-900 p-2.5 text-center">
+                    <p className="text-[10px] text-slate-400 uppercase">Available</p>
+                    <p className="mt-1 text-xl font-bold text-emerald-400">
                       {inventory?.available_beds ?? 0}
                     </p>
                   </div>
-                  <div className="rounded-lg bg-slate-900 p-3.5">
-                    <p className="text-[11px] text-slate-400 uppercase">Reserved In Transit</p>
-                    <p className="mt-1 text-2xl font-bold text-amber-400">
+                  <div className="rounded-lg bg-slate-900 p-2.5 text-center">
+                    <p className="text-[10px] text-slate-400 uppercase">Reserved</p>
+                    <p className="mt-1 text-xl font-bold text-amber-400">
                       {inventory?.reserved_beds ?? 0}
+                    </p>
+                  </div>
+                  <div className="rounded-lg bg-slate-900 p-2.5 text-center">
+                    <p className="text-[10px] text-slate-400 uppercase">Total</p>
+                    <p className="mt-1 text-xl font-bold text-slate-200">
+                      {inventory?.total_general_beds ?? inventory?.total_beds ?? 0}
                     </p>
                   </div>
                 </div>
 
                 <p className="text-[11px] text-slate-400 leading-relaxed">
-                  Beds in the reserved state are held during active patient transfer and automatically released back to available inventory upon referral completion.
+                  General inpatient capacity for non-critical admissions.
                 </p>
               </div>
 
@@ -788,24 +888,106 @@ export default function HospitalDashboard({ user }: HospitalDashboardProps) {
                   </span>
                 </div>
 
-                <div className="grid grid-cols-2 gap-3">
-                  <div className="rounded-lg bg-slate-900 p-3.5">
-                    <p className="text-[11px] text-slate-400 uppercase">Available ICU</p>
-                    <p className="mt-1 text-2xl font-bold text-emerald-400">
+                <div className="grid grid-cols-3 gap-2">
+                  <div className="rounded-lg bg-slate-900 p-2.5 text-center">
+                    <p className="text-[10px] text-slate-400 uppercase">Available</p>
+                    <p className="mt-1 text-xl font-bold text-emerald-400">
                       {inventory?.available_icu_beds ?? 0}
                     </p>
                   </div>
-                  <div className="rounded-lg bg-slate-900 p-3.5">
-                    <p className="text-[11px] text-slate-400 uppercase">Reserved ICU</p>
-                    <p className="mt-1 text-2xl font-bold text-amber-400">
+                  <div className="rounded-lg bg-slate-900 p-2.5 text-center">
+                    <p className="text-[10px] text-slate-400 uppercase">Reserved</p>
+                    <p className="mt-1 text-xl font-bold text-amber-400">
                       {inventory?.reserved_icu_beds ?? 0}
+                    </p>
+                  </div>
+                  <div className="rounded-lg bg-slate-900 p-2.5 text-center">
+                    <p className="text-[10px] text-slate-400 uppercase">Total</p>
+                    <p className="mt-1 text-xl font-bold text-slate-200">
+                      {inventory?.total_icu_beds ?? 0}
                     </p>
                   </div>
                 </div>
 
                 <p className="text-[11px] text-slate-400 leading-relaxed">
-                  Zero double-booking guarantee: ICU beds are acquired atomically via SQL transactions (<code className="text-blue-300">SELECT FOR UPDATE</code>) when an inbound referral is accepted.
+                  Zero double-booking guarantee: ICU beds reserved via row-level transactional locks.
                 </p>
+              </div>
+
+              {/* Emergency Ward Capacity */}
+              <div className="rounded-xl border border-slate-800 bg-slate-950 p-5 space-y-4">
+                <div className="flex items-center justify-between">
+                  <span className="text-sm font-bold text-white">Emergency & Trauma</span>
+                  <span className="rounded-full bg-amber-500/10 px-2.5 py-0.5 text-xs font-semibold text-amber-400 border border-amber-500/20">
+                    Immediate
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-3 gap-2">
+                  <div className="rounded-lg bg-slate-900 p-2.5 text-center">
+                    <p className="text-[10px] text-slate-400 uppercase">Available</p>
+                    <p className="mt-1 text-xl font-bold text-emerald-400">
+                      {inventory?.available_emergency_beds ?? 0}
+                    </p>
+                  </div>
+                  <div className="rounded-lg bg-slate-900 p-2.5 text-center">
+                    <p className="text-[10px] text-slate-400 uppercase">Reserved</p>
+                    <p className="mt-1 text-xl font-bold text-amber-400">
+                      {inventory?.reserved_emergency_beds ?? 0}
+                    </p>
+                  </div>
+                  <div className="rounded-lg bg-slate-900 p-2.5 text-center">
+                    <p className="text-[10px] text-slate-400 uppercase">Total</p>
+                    <p className="mt-1 text-xl font-bold text-slate-200">
+                      {inventory?.total_emergency_beds ?? 0}
+                    </p>
+                  </div>
+                </div>
+
+                <p className="text-[11px] text-slate-400 leading-relaxed">
+                  Dedicated triage and resuscitation bays for acute emergency transfers.
+                </p>
+              </div>
+            </div>
+
+            {/* Facility & Equipment Readiness */}
+            <div className="mt-6 rounded-xl border border-slate-800 bg-slate-950 p-5 space-y-4">
+              <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+                <span className="text-sm font-bold text-white">Critical Support Equipment & Readiness</span>
+                <span className="text-xs text-slate-400">Updated in PostgreSQL</span>
+              </div>
+
+              <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
+                <div className="rounded-lg bg-slate-900 p-3 text-center">
+                  <p className="text-[11px] text-slate-400">Oxygen Support</p>
+                  <p className={`mt-1 font-bold text-xs uppercase ${inventory?.oxygen_support === "Yes" ? "text-emerald-400" : "text-rose-400"}`}>
+                    {inventory?.oxygen_support === "Yes" ? "● Active" : "○ Inactive"}
+                  </p>
+                </div>
+                <div className="rounded-lg bg-slate-900 p-3 text-center">
+                  <p className="text-[11px] text-slate-400">Ventilators</p>
+                  <p className={`mt-1 font-bold text-xs uppercase ${inventory?.ventilator === "Yes" ? "text-emerald-400" : "text-rose-400"}`}>
+                    {inventory?.ventilator === "Yes" ? "● Available" : "○ None"}
+                  </p>
+                </div>
+                <div className="rounded-lg bg-slate-900 p-3 text-center">
+                  <p className="text-[11px] text-slate-400">Ambulance</p>
+                  <p className={`mt-1 font-bold text-xs uppercase ${inventory?.ambulance === "Yes" ? "text-emerald-400" : "text-rose-400"}`}>
+                    {inventory?.ambulance === "Yes" ? "● On Call" : "○ None"}
+                  </p>
+                </div>
+                <div className="rounded-lg bg-slate-900 p-3 text-center">
+                  <p className="text-[11px] text-slate-400">Blood Bank</p>
+                  <p className={`mt-1 font-bold text-xs uppercase ${inventory?.blood_bank === "Yes" ? "text-emerald-400" : "text-rose-400"}`}>
+                    {inventory?.blood_bank === "Yes" ? "● Stocked" : "○ None"}
+                  </p>
+                </div>
+                <div className="rounded-lg bg-slate-900 p-3 text-center">
+                  <p className="text-[11px] text-slate-400">24x7 Emergency</p>
+                  <p className={`mt-1 font-bold text-xs uppercase ${inventory?.emergency_24x7 === "Yes" ? "text-emerald-400" : "text-rose-400"}`}>
+                    {inventory?.emergency_24x7 === "Yes" ? "● Operational" : "○ Closed"}
+                  </p>
+                </div>
               </div>
             </div>
           </div>
@@ -1219,6 +1401,186 @@ export default function HospitalDashboard({ user }: HospitalDashboardProps) {
                 ))}
               </div>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* ============================================================ */}
+      {/* MODAL: UPDATE BED CAPACITY & HOSPITAL RESOURCES */}
+      {/* ============================================================ */}
+      {capacityModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-fade-in">
+          <div className="w-full max-w-lg max-h-[90vh] overflow-y-auto rounded-2xl border border-slate-800 bg-slate-900 p-6 shadow-2xl space-y-5">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+              <div>
+                <h3 className="text-base font-bold text-white">
+                  Update Bed Capacity & Facility Resources
+                </h3>
+                <p className="text-xs text-slate-400">
+                  Transactional update synchronized directly with PostgreSQL
+                </p>
+              </div>
+              <button
+                onClick={() => setCapacityModalOpen(false)}
+                className="rounded-lg p-1 text-slate-400 hover:text-white"
+                disabled={capSaving}
+              >
+                ✕
+              </button>
+            </div>
+
+            {capModalError && (
+              <div className="rounded-xl border border-rose-500/30 bg-rose-500/10 p-3 text-xs text-rose-300">
+                {capModalError}
+              </div>
+            )}
+
+            {capModalSuccess && (
+              <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-3 text-xs text-emerald-300">
+                {capModalSuccess}
+              </div>
+            )}
+
+            <div className="space-y-4">
+              <h4 className="text-xs font-bold uppercase tracking-wider text-slate-400">
+                Bed Capacity Management
+              </h4>
+
+              <div className="grid grid-cols-3 gap-3">
+                <div>
+                  <label className="text-[11px] font-medium text-slate-300">
+                    General Ward
+                  </label>
+                  <input
+                    type="number"
+                    min="0"
+                    value={capGeneral}
+                    onChange={(e) => setCapGeneral(Math.max(0, parseInt(e.target.value) || 0))}
+                    className="mt-1 w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-white outline-none focus:border-blue-500"
+                  />
+                  <p className="mt-1 text-[10px] text-slate-400">
+                    Occupied+Res: {(inventory?.occupied_beds || 0) + (inventory?.reserved_beds || 0)}
+                  </p>
+                </div>
+
+                <div>
+                  <label className="text-[11px] font-medium text-slate-300">
+                    ICU Ward
+                  </label>
+                  <input
+                    type="number"
+                    min="0"
+                    value={capICU}
+                    onChange={(e) => setCapICU(Math.max(0, parseInt(e.target.value) || 0))}
+                    className="mt-1 w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-white outline-none focus:border-blue-500"
+                  />
+                  <p className="mt-1 text-[10px] text-slate-400">
+                    Occupied+Res: {(inventory?.occupied_icu_beds || 0) + (inventory?.reserved_icu_beds || 0)}
+                  </p>
+                </div>
+
+                <div>
+                  <label className="text-[11px] font-medium text-slate-300">
+                    Emergency Bay
+                  </label>
+                  <input
+                    type="number"
+                    min="0"
+                    value={capEmergency}
+                    onChange={(e) => setCapEmergency(Math.max(0, parseInt(e.target.value) || 0))}
+                    className="mt-1 w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-white outline-none focus:border-blue-500"
+                  />
+                  <p className="mt-1 text-[10px] text-slate-400">
+                    Occupied+Res: {(inventory?.occupied_emergency_beds || 0) + (inventory?.reserved_emergency_beds || 0)}
+                  </p>
+                </div>
+              </div>
+
+              <h4 className="text-xs font-bold uppercase tracking-wider text-slate-400 pt-2 border-t border-slate-800">
+                Facility Support Resources
+              </h4>
+
+              <div className="grid grid-cols-2 gap-3 text-xs">
+                <div>
+                  <label className="text-[11px] text-slate-300">Oxygen Support</label>
+                  <select
+                    value={resOxygen}
+                    onChange={(e) => setResOxygen(e.target.value)}
+                    className="mt-1 w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-white outline-none focus:border-blue-500"
+                  >
+                    <option value="Yes">Yes (Available)</option>
+                    <option value="No">No (Unavailable)</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="text-[11px] text-slate-300">Ventilator Units</label>
+                  <select
+                    value={resVentilator}
+                    onChange={(e) => setResVentilator(e.target.value)}
+                    className="mt-1 w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-white outline-none focus:border-blue-500"
+                  >
+                    <option value="Yes">Yes (Available)</option>
+                    <option value="No">No (Unavailable)</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="text-[11px] text-slate-300">Ambulance Readiness</label>
+                  <select
+                    value={resAmbulance}
+                    onChange={(e) => setResAmbulance(e.target.value)}
+                    className="mt-1 w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-white outline-none focus:border-blue-500"
+                  >
+                    <option value="Yes">Yes (On Call)</option>
+                    <option value="No">No (Unavailable)</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="text-[11px] text-slate-300">Blood Bank Supply</label>
+                  <select
+                    value={resBloodBank}
+                    onChange={(e) => setResBloodBank(e.target.value)}
+                    className="mt-1 w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-white outline-none focus:border-blue-500"
+                  >
+                    <option value="Yes">Yes (Stocked)</option>
+                    <option value="No">No (Unavailable)</option>
+                  </select>
+                </div>
+              </div>
+
+              <div>
+                <label className="text-[11px] text-slate-300">24x7 Emergency Services</label>
+                <select
+                  value={resEmergency24x7}
+                  onChange={(e) => setResEmergency24x7(e.target.value)}
+                  className="mt-1 w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-white outline-none focus:border-blue-500"
+                >
+                  <option value="Yes">Yes (24x7 Operational)</option>
+                  <option value="No">No (Limited Hours)</option>
+                </select>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-3 pt-3 border-t border-slate-800">
+              <button
+                type="button"
+                onClick={() => setCapacityModalOpen(false)}
+                disabled={capSaving}
+                className="rounded-xl border border-slate-700 bg-slate-800 px-4 py-2 text-xs font-semibold text-slate-300 hover:bg-slate-700 transition"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleSaveCapacityAndResources}
+                disabled={capSaving}
+                className="rounded-xl bg-blue-600 px-4 py-2 text-xs font-semibold text-white hover:bg-blue-500 transition disabled:opacity-50 flex items-center gap-1.5"
+              >
+                {capSaving ? "Saving to PostgreSQL..." : "Save Changes"}
+              </button>
+            </div>
           </div>
         </div>
       )}

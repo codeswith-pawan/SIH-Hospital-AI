@@ -39,10 +39,17 @@ from src.auth.rate_limiter import (
     get_rate_limiter_status,
 )
 
+from sqlalchemy.orm import Session
+from src.database.db_manager import get_db_session
+from src.database.pg_repository import PgReferralRepository
+
 from src.api.schemas import (
     PatientReferralRequest,
     CreateReferralRequest,
     ReferralStatusUpdateRequest,
+    BedCapacityUpdateItem,
+    HospitalInventoryUpdateRequest,
+    HospitalResourcesUpdateRequest,
 )
 from src.auth.schemas import (
     LoginRequest,
@@ -109,9 +116,19 @@ from src.prediction.referral_store import (
 )
 from src.api.patient_routes import router as patient_router
 from src.api.admin_routes import router as admin_router
+from src.api.registration_routes import router as registration_router
+from src.api.observability import (
+    ProductionSecurityAndLoggingMiddleware,
+    get_liveness,
+    get_readiness,
+    get_system_metrics,
+)
+from src.config import get_settings, validate_production_configuration
+from fastapi.responses import JSONResponse
 
 @asynccontextmanager
 async def lifespan(app_instance: FastAPI):
+    validate_production_configuration()
     validate_production_security_config()
     from src.database.db_manager import validate_production_database_config
     validate_production_database_config()
@@ -122,19 +139,21 @@ async def lifespan(app_instance: FastAPI):
 app = FastAPI(
     title="AI Powered Smart Hospital Referral System",
     description=(
-        "Backend API for AI-based hospital referral, "
-        "hospital ranking and bed reservation."
+        "Production-grade Backend API for AI-based hospital referral, "
+        "hierarchical government registration, multi-tier review, and bed reservation."
     ),
     version="1.0.0",
     lifespan=lifespan,
 )
 
+# Production security headers and request-id correlation middleware
+app.add_middleware(ProductionSecurityAndLoggingMiddleware)
+
+# CORS configuration with configurable origins
+_app_settings = get_settings()
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-    ],
+    allow_origins=_app_settings.cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -143,6 +162,7 @@ app.add_middleware(
 
 app.include_router(patient_router)
 app.include_router(admin_router)
+app.include_router(registration_router)
 
 # ============================================================
 # HOSPITAL ACCESS AUTHORIZATION
@@ -400,15 +420,62 @@ def root():
 
 
 # ============================================================
-# HEALTH
+# HEALTH & OBSERVABILITY
 # ============================================================
 
-@app.get("/health")
+@app.get("/health", tags=["Observability"])
 def health_check():
-
     return {
         "success": True,
         "status": "healthy",
+    }
+
+
+@app.get("/health/live", tags=["Observability"])
+def health_liveness():
+    """Liveness probe: returns 200 if the process is running."""
+    return get_liveness()
+
+
+@app.get("/health/ready", tags=["Observability"])
+def health_readiness():
+    """Readiness probe: validates backend dependencies (PostgreSQL, Redis, Config)."""
+    res = get_readiness()
+    status_code = 200 if res.get("ready") else 503
+    return JSONResponse(status_code=status_code, content=res)
+
+
+@app.get("/metrics", tags=["Observability"])
+def system_metrics(req: Request):
+    """Operational metrics: requests, latencies, outbox queue, worker stats."""
+    from src.api.observability import check_metrics_access
+    if not check_metrics_access(req):
+        raise HTTPException(status_code=403, detail="Access to operational metrics is restricted to authorized operators.")
+    return get_system_metrics()
+
+
+@app.get("/admin/monitoring", tags=["Observability"])
+@app.get("/api/admin/monitoring", tags=["Observability"], include_in_schema=False)
+def get_admin_monitoring_dashboard(
+    current_user: dict = Depends(require_current_user),
+):
+    """
+    Protected monitoring dashboard data endpoint.
+    Only accessible to CENTRAL_ADMIN role.
+    Returns system metrics + alert summary. Never exposes PII.
+    """
+    if current_user.get("role") not in ("CENTRAL_ADMIN",):
+        raise HTTPException(status_code=403, detail="Access restricted to system administrators.")
+    from src.api.observability import get_system_metrics
+    from src.services.alerting_service import evaluate_thresholds, get_alert_summary
+    metrics = get_system_metrics()
+    evaluate_thresholds(metrics)
+    alert_summary = get_alert_summary()
+    return {
+        "system_metrics": metrics,
+        "alerts": alert_summary,
+        "dashboard_version": "4D-4",
+        "generated_at": metrics.get("timestamp"),
     }
 
 
@@ -1045,36 +1112,39 @@ def discharge_patient_api(
 
 
 # ============================================================
-# HOSPITAL DASHBOARD INVENTORY
+# HOSPITAL DASHBOARD INVENTORY & BED MANAGEMENT (PHASE 4A)
 # ============================================================
 
 @app.get("/hospitals/{hospital_id}/inventory")
 def get_hospital_dashboard_inventory(
     hospital_id: str,
-    current_user: dict = Depends(
-        require_current_user
-    ),
+    current_user: dict = Depends(require_current_user),
+    db: Session = Depends(get_db_session),
 ):
     # ----------------------------------------
     # Geographic role authorization check
     # ----------------------------------------
-
     if not can_access_hospital(current_user, hospital_id):
         raise HTTPException(
             status_code=403,
-            detail=(
-                "You are not authorized to access "
-                "this hospital inventory."
-            )
+            detail="You are not authorized to access this hospital inventory."
         )
 
     # ----------------------------------------
-    # Load inventory
+    # 1. Authoritative Load from PostgreSQL
     # ----------------------------------------
+    inventory = None
+    try:
+        repo = PgReferralRepository(db)
+        inventory = repo.get_hospital_inventory(hospital_id)
+    except Exception:
+        inventory = None
 
-    inventory = get_hospital_inventory(
-        hospital_id
-    )
+    # ----------------------------------------
+    # 2. Fallback to legacy JSON store for test mocks if not found in PG
+    # ----------------------------------------
+    if inventory is None:
+        inventory = get_hospital_inventory(hospital_id)
 
     if inventory is None:
         raise HTTPException(
@@ -1086,6 +1156,115 @@ def get_hospital_dashboard_inventory(
         "success": True,
         "hospital_id": hospital_id,
         "inventory": inventory,
+        "available_beds": inventory.get("available_beds", 0),
+        "available_icu_beds": inventory.get("available_icu_beds", 0),
+        "reserved_beds": inventory.get("reserved_beds", 0),
+        "reserved_icu_beds": inventory.get("reserved_icu_beds", 0),
+    }
+
+
+@app.put("/hospitals/{hospital_id}/inventory")
+def update_hospital_inventory_endpoint(
+    hospital_id: str,
+    payload: HospitalInventoryUpdateRequest,
+    current_user: dict = Depends(require_current_user),
+    db: Session = Depends(get_db_session),
+):
+    """
+    Atomically updates hospital bed capacity in PostgreSQL.
+    Enforces role-based permissions, hospital scoping, and capacity invariants.
+    """
+    role = current_user.get("role")
+    if role not in ("HOSPITAL", "DISTRICT_ADMIN", "STATE_ADMIN", "CENTRAL_ADMIN"):
+        raise HTTPException(status_code=403, detail="Unauthorized role for modifying hospital inventory.")
+
+    if role == "HOSPITAL" and current_user.get("hospital_id") != hospital_id:
+        raise HTTPException(status_code=403, detail="Hospital administrators can only update their own inventory.")
+
+    if not can_access_hospital(current_user, hospital_id):
+        raise HTTPException(status_code=403, detail="You are not authorized for this hospital's jurisdiction.")
+
+    items_to_update = []
+    if payload.capacities:
+        items_to_update.extend(payload.capacities)
+    elif payload.bed_type is not None and payload.total_capacity is not None:
+        items_to_update.append(BedCapacityUpdateItem(bed_type=payload.bed_type, total_capacity=payload.total_capacity))
+    else:
+        raise HTTPException(
+            status_code=422,
+            detail="Must provide either (bed_type and total_capacity) or a list of capacities."
+        )
+
+    repo = PgReferralRepository(db)
+    user_id = current_user.get("user_id") or current_user.get("username")
+    latest_inventory = None
+
+    try:
+        for item in items_to_update:
+            latest_inventory = repo.update_hospital_bed_capacity(
+                hospital_id=hospital_id,
+                bed_type=item.bed_type,
+                total_capacity=item.total_capacity,
+                user_id=user_id,
+            )
+    except ValueError as e:
+        err_msg = str(e)
+        if "not found" in err_msg.lower():
+            raise HTTPException(status_code=404, detail=err_msg)
+        raise HTTPException(status_code=422, detail=err_msg)
+
+    return {
+        "success": True,
+        "message": "Hospital bed inventory updated successfully.",
+        "hospital_id": hospital_id,
+        "inventory": latest_inventory,
+    }
+
+
+@app.patch("/hospitals/{hospital_id}/resources")
+def update_hospital_resources_endpoint(
+    hospital_id: str,
+    payload: HospitalResourcesUpdateRequest,
+    current_user: dict = Depends(require_current_user),
+    db: Session = Depends(get_db_session),
+):
+    """
+    Updates hospital support resources (oxygen, ventilator, ambulance, etc.) in PostgreSQL.
+    """
+    role = current_user.get("role")
+    if role not in ("HOSPITAL", "DISTRICT_ADMIN", "STATE_ADMIN", "CENTRAL_ADMIN"):
+        raise HTTPException(status_code=403, detail="Unauthorized role for modifying hospital resources.")
+
+    if role == "HOSPITAL" and current_user.get("hospital_id") != hospital_id:
+        raise HTTPException(status_code=403, detail="Hospital administrators can only update their own resources.")
+
+    if not can_access_hospital(current_user, hospital_id):
+        raise HTTPException(status_code=403, detail="You are not authorized for this hospital's jurisdiction.")
+
+    resource_data = {k: v for k, v in payload.model_dump().items() if v is not None}
+    if not resource_data:
+        raise HTTPException(status_code=422, detail="No resource fields provided for update.")
+
+    repo = PgReferralRepository(db)
+    user_id = current_user.get("user_id") or current_user.get("username")
+
+    try:
+        updated_inventory = repo.update_hospital_resources(
+            hospital_id=hospital_id,
+            resources=resource_data,
+            user_id=user_id,
+        )
+    except ValueError as e:
+        err_msg = str(e)
+        if "not found" in err_msg.lower():
+            raise HTTPException(status_code=404, detail=err_msg)
+        raise HTTPException(status_code=422, detail=err_msg)
+
+    return {
+        "success": True,
+        "message": "Hospital resources updated successfully.",
+        "hospital_id": hospital_id,
+        "inventory": updated_inventory,
     }
 
 
@@ -1695,12 +1874,22 @@ def get_notifications_endpoint(
     hospital_id: str,
     unread_only: bool = Query(default=False),
     limit: int = Query(default=50, ge=1, le=100),
+    page: int = Query(default=1, ge=1),
+    page_size: Optional[int] = Query(default=None, ge=1, le=100),
+    category: Optional[str] = Query(default=None),
     current_user: dict = Depends(require_current_user),
 ):
     if not can_access_hospital(current_user, hospital_id):
         raise HTTPException(status_code=403, detail="Unauthorized to view notifications for this hospital.")
     from src.prediction.notification_store import get_hospital_notifications
-    return get_hospital_notifications(hospital_id, unread_only=unread_only, limit=limit)
+    return get_hospital_notifications(
+        hospital_id,
+        unread_only=unread_only,
+        limit=limit,
+        page=page,
+        page_size=page_size,
+        event_category=category,
+    )
 
 
 @app.post("/hospitals/{hospital_id}/notifications/{notification_id}/read")
@@ -1726,6 +1915,83 @@ def mark_all_notifications_read_endpoint(
     from src.prediction.notification_store import mark_all_notifications_read
     count = mark_all_notifications_read(hospital_id)
     return {"success": True, "marked_read": count}
+
+
+@app.get("/notifications/me")
+def get_my_notifications_endpoint(
+    unread_only: bool = Query(default=False),
+    limit: int = Query(default=50, ge=1, le=100),
+    page: int = Query(default=1, ge=1),
+    page_size: Optional[int] = Query(default=None, ge=1, le=100),
+    category: Optional[str] = Query(default=None),
+    current_user: dict = Depends(require_current_user),
+):
+    """
+    Unified notification endpoint for the authenticated user based on role / hospital.
+    """
+    from src.database.db_manager import is_postgres, get_referral_repository
+    if is_postgres():
+        repo = get_referral_repository()
+        return repo.get_user_notifications(
+            user=current_user,
+            unread_only=unread_only,
+            limit=limit,
+            page=page,
+            page_size=page_size,
+            event_category=category,
+        )
+    hosp_id = current_user.get("hospital_id")
+    if hosp_id:
+        from src.prediction.notification_store import get_hospital_notifications
+        return get_hospital_notifications(
+            hosp_id,
+            unread_only=unread_only,
+            limit=limit,
+            page=page,
+            page_size=page_size,
+            event_category=category,
+        )
+    return {"user_id": current_user.get("user_id"), "unread_count": 0, "total_returned": 0, "notifications": []}
+
+
+@app.post("/notifications/{notification_id}/read")
+def mark_user_notification_read_endpoint(
+    notification_id: str,
+    current_user: dict = Depends(require_current_user),
+):
+    """Mark a notification as read for current authenticated user."""
+    from src.database.db_manager import is_postgres, get_referral_repository
+    if is_postgres():
+        repo = get_referral_repository()
+        success = repo.mark_user_notification_as_read(notification_id, current_user)
+        return {"success": success}
+    hosp_id = current_user.get("hospital_id")
+    if hosp_id:
+        from src.prediction.notification_store import mark_notification_as_read
+        try:
+            nid = int(notification_id)
+        except ValueError:
+            return {"success": False}
+        return {"success": mark_notification_as_read(nid, hosp_id)}
+    return {"success": False}
+
+
+@app.post("/notifications/read-all")
+def mark_all_user_notifications_read_endpoint(
+    current_user: dict = Depends(require_current_user),
+):
+    """Mark all notifications as read for current authenticated user."""
+    from src.database.db_manager import is_postgres, get_referral_repository
+    if is_postgres():
+        repo = get_referral_repository()
+        count = repo.mark_all_user_notifications_read(current_user)
+        return {"success": True, "marked_read": count}
+    hosp_id = current_user.get("hospital_id")
+    if hosp_id:
+        from src.prediction.notification_store import mark_all_notifications_read
+        count = mark_all_notifications_read(hosp_id)
+        return {"success": True, "marked_read": count}
+    return {"success": True, "marked_read": 0}
 
 
 # ============================================================

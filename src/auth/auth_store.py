@@ -229,6 +229,27 @@ def authenticate_user(username, password):
             return matched_user
         return None
 
+    # Check relational database users if available (activated provisioned users)
+    try:
+        from src.database.db_manager import get_session_factory
+        SessionFactory = get_session_factory()
+        with SessionFactory() as db_session:
+            from src.database.pg_models import User
+            db_user = db_session.query(User).filter_by(username=username).first()
+            if db_user and db_user.is_active and verify_password(password, db_user.password_hash):
+                return {
+                    "user_id": db_user.user_id,
+                    "username": db_user.username,
+                    "name": db_user.name,
+                    "role": db_user.role_id,
+                    "hospital_id": db_user.hospital_id,
+                    "state": db_user.state,
+                    "district": db_user.district,
+                    "password": db_user.password_hash,
+                }
+    except Exception:
+        pass
+
     # Timing attack defense: verify against dummy hash to prevent username enumeration
     verify_password(password, DUMMY_PBKDF2_HASH)
     return None
@@ -240,5 +261,26 @@ def get_user_by_id(user_id):
     for user in users:
         if user["user_id"] == user_id:
             return user
+
+    # Check relational database users if available
+    try:
+        from src.database.db_manager import get_session_factory
+        SessionFactory = get_session_factory()
+        with SessionFactory() as db_session:
+            from src.database.pg_models import User
+            db_user = db_session.query(User).filter_by(user_id=user_id).first()
+            if db_user:
+                return {
+                    "user_id": db_user.user_id,
+                    "username": db_user.username,
+                    "name": db_user.name,
+                    "role": db_user.role_id,
+                    "hospital_id": db_user.hospital_id,
+                    "state": db_user.state,
+                    "district": db_user.district,
+                    "password": db_user.password_hash,
+                }
+    except Exception:
+        pass
 
     return None

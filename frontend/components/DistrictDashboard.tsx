@@ -1,8 +1,15 @@
 "use client";
 
 import React, { useEffect, useState } from "react";
-import { User, DistrictMetrics, CriticalAlert, DistrictHospital, Referral } from "@/lib/types";
-import { apiGetDistrictOverview, apiGetDistrictHospitals, apiGetDistrictReferrals } from "@/lib/api";
+import { User, DistrictMetrics, CriticalAlert, DistrictHospital, Referral, NotificationItem } from "@/lib/types";
+import {
+  apiGetDistrictOverview,
+  apiGetDistrictHospitals,
+  apiGetDistrictReferrals,
+  apiGetReviewerNotifications,
+  apiMarkReviewerNotificationRead,
+  apiMarkAllReviewerNotificationsRead,
+} from "@/lib/api";
 import { formatPercent, formatDateTime } from "@/lib/formatters";
 import { DashboardLayout } from "./shared/DashboardLayout";
 import { StatCard } from "./shared/StatCard";
@@ -10,6 +17,7 @@ import { StatusBadge, PriorityBadge } from "./shared/StatusBadge";
 import { DataTable, Column } from "./shared/DataTable";
 import { ReferralTimeline } from "./shared/ReferralTimeline";
 import { ErrorState } from "./shared/LoadingAndErrorStates";
+import { ReviewerPortal } from "./reviewer/ReviewerPortal";
 
 interface DistrictDashboardProps {
   user: User;
@@ -26,8 +34,26 @@ export default function DistrictDashboard({ user }: DistrictDashboardProps) {
   const [referrals, setReferrals] = useState<Referral[]>([]);
   const [selectedReferral, setSelectedReferral] = useState<Referral | null>(null);
 
+  // Notifications State (Phase 4D-2)
+  const [notifications, setNotifications] = useState<NotificationItem[]>([]);
+  const [unreadCount, setUnreadCount] = useState(0);
+  const [notifLoading, setNotifLoading] = useState(false);
+
   const districtName = user.district || "District";
   const stateName = user.state || "Punjab";
+
+  const loadNotifications = async () => {
+    setNotifLoading(true);
+    try {
+      const data = await apiGetReviewerNotifications();
+      setNotifications(data.notifications || []);
+      setUnreadCount(data.unread_count || 0);
+    } catch {
+      // Background poll failure
+    } finally {
+      setNotifLoading(false);
+    }
+  };
 
   const loadData = async () => {
     setLoading(true);
@@ -46,6 +72,9 @@ export default function DistrictDashboard({ user }: DistrictDashboardProps) {
       // Load District Referrals
       const refRes = await apiGetDistrictReferrals();
       setReferrals(refRes.referrals || []);
+
+      // Load Reviewer In-App Notifications
+      loadNotifications();
     } catch (err: any) {
       setError(err.message || "Failed to load district health operations data.");
     } finally {
@@ -55,6 +84,7 @@ export default function DistrictDashboard({ user }: DistrictDashboardProps) {
 
   useEffect(() => {
     loadData();
+    loadNotifications();
   }, []);
 
   // Hospital Facility Columns
@@ -209,11 +239,21 @@ export default function DistrictDashboard({ user }: DistrictDashboardProps) {
         { id: "overview", label: "District Overview", icon: "📊" },
         { id: "hospitals", label: "Hospital Availability", icon: "🏥", badge: hospitals.length },
         { id: "referrals", label: "District Referrals", icon: "🔄", badge: referrals.length },
+        { id: "registration", label: "Registration & Review", icon: "📋" },
       ]}
       activeTab={activeTab}
       onTabChange={setActiveTab}
       onRefresh={loadData}
       refreshLoading={loading}
+      notifications={notifications}
+      unreadCount={unreadCount}
+      notifLoading={notifLoading}
+      onMarkNotifRead={(nid) => {
+        apiMarkReviewerNotificationRead(nid).then(loadNotifications);
+      }}
+      onMarkAllNotifsRead={() => {
+        apiMarkAllReviewerNotificationsRead().then(loadNotifications);
+      }}
     >
       {error && (
         <ErrorState
@@ -260,6 +300,40 @@ export default function DistrictDashboard({ user }: DistrictDashboardProps) {
               variant="primary"
             />
           </div>
+
+          {/* Secondary Registration & Capacity Stats */}
+          {metrics.approved_hospitals !== undefined && (
+            <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+              <StatCard
+                title="Approved Facilities"
+                value={metrics.approved_hospitals}
+                subtitle="Active district facilities"
+                icon="✅"
+                variant="default"
+              />
+              <StatCard
+                title="Pending Applications"
+                value={metrics.pending_applications ?? 0}
+                subtitle="Verification pending"
+                icon="⏳"
+                variant={(metrics.pending_applications ?? 0) > 0 ? "warning" : "default"}
+              />
+              <StatCard
+                title="Active Bed Holds"
+                value={metrics.total_reserved_beds ?? 0}
+                subtitle="Reserved / confirmed in transit"
+                icon="🔒"
+                variant="purple"
+              />
+              <StatCard
+                title="Approved Applications"
+                value={metrics.approved_applications ?? 0}
+                subtitle="Onboarded institutions"
+                icon="📋"
+                variant="primary"
+              />
+            </div>
+          )}
 
           {/* Critical Alerts */}
           {alerts && alerts.length > 0 && (
@@ -372,6 +446,13 @@ export default function DistrictDashboard({ user }: DistrictDashboardProps) {
             pageSize={10}
           />
         </div>
+      )}
+
+      {/* ============================================================ */}
+      {/* TAB 4: REGISTRATION & VERIFICATION (Reviewer Portal)        */}
+      {/* ============================================================ */}
+      {activeTab === "registration" && (
+        <ReviewerPortal user={user} />
       )}
 
       {/* TIMELINE MODAL */}

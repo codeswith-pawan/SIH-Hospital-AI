@@ -122,6 +122,15 @@ def get_reservation(
     """
     Get one reservation.
     """
+    try:
+        from src.database.db_manager import is_postgres, get_referral_repository
+        if is_postgres():
+            repo = get_referral_repository()
+            res = repo.get_reservation_direct(hospital_id, patient_id)
+            if res is not None:
+                return res
+    except Exception:
+        pass
 
     reservations = load_reservations()
 
@@ -265,6 +274,15 @@ def get_hospital_inventory(
     and recalculate bed counts from actual
     bed-level status.
     """
+    try:
+        from src.database.db_manager import is_postgres, get_referral_repository
+        if is_postgres():
+            repo = get_referral_repository()
+            inv = repo.get_hospital_inventory(hospital_id)
+            if inv is not None:
+                return inv
+    except Exception:
+        pass
 
     inventory_map = (
         load_bed_inventory()

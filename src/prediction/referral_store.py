@@ -589,6 +589,18 @@ def attach_reservation(
     hospital_id,
     bed_type
 ):
+    try:
+        from src.database.db_manager import is_postgres, get_referral_repository
+        if is_postgres():
+            repo = get_referral_repository()
+            return repo.attach_reservation_to_referral(
+                referral_id=referral_id,
+                hospital_id=hospital_id,
+                bed_type=bed_type,
+            )
+    except Exception:
+        pass
+
     referrals = _load_referrals()
 
     for referral in referrals:

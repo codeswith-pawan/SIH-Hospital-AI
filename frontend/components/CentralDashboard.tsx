@@ -1,13 +1,19 @@
 "use client";
 
 import React, { useEffect, useState } from "react";
-import { User, CentralMetrics, StateSummary } from "@/lib/types";
-import { apiGetCentralOverview } from "@/lib/api";
+import { User, CentralMetrics, StateSummary, NotificationItem } from "@/lib/types";
+import {
+  apiGetCentralOverview,
+  apiGetReviewerNotifications,
+  apiMarkReviewerNotificationRead,
+  apiMarkAllReviewerNotificationsRead,
+} from "@/lib/api";
 import { formatPercent } from "@/lib/formatters";
 import { DashboardLayout } from "./shared/DashboardLayout";
 import { StatCard } from "./shared/StatCard";
 import { DataTable, Column } from "./shared/DataTable";
 import { ErrorState } from "./shared/LoadingAndErrorStates";
+import { ReviewerPortal } from "./reviewer/ReviewerPortal";
 
 interface CentralDashboardProps {
   user: User;
@@ -21,6 +27,24 @@ export default function CentralDashboard({ user }: CentralDashboardProps) {
   const [metrics, setMetrics] = useState<CentralMetrics | null>(null);
   const [states, setStates] = useState<StateSummary[]>([]);
 
+  // Notifications State (Phase 4D-2)
+  const [notifications, setNotifications] = useState<NotificationItem[]>([]);
+  const [unreadCount, setUnreadCount] = useState(0);
+  const [notifLoading, setNotifLoading] = useState(false);
+
+  const loadNotifications = async () => {
+    setNotifLoading(true);
+    try {
+      const data = await apiGetReviewerNotifications();
+      setNotifications(data.notifications || []);
+      setUnreadCount(data.unread_count || 0);
+    } catch {
+      // Background poll failure
+    } finally {
+      setNotifLoading(false);
+    }
+  };
+
   const loadData = async () => {
     setLoading(true);
     setError("");
@@ -29,6 +53,9 @@ export default function CentralDashboard({ user }: CentralDashboardProps) {
       const data = await apiGetCentralOverview();
       setMetrics(data.metrics);
       setStates(data.states || []);
+
+      // Load Central Notifications
+      loadNotifications();
     } catch (err: any) {
       setError(err.message || "Failed to load national health coordination overview.");
     } finally {
@@ -38,6 +65,7 @@ export default function CentralDashboard({ user }: CentralDashboardProps) {
 
   useEffect(() => {
     loadData();
+    loadNotifications();
   }, []);
 
   // State Summary Columns
@@ -122,11 +150,21 @@ export default function CentralDashboard({ user }: CentralDashboardProps) {
       tabs={[
         { id: "national", label: "National Command", icon: "🌐" },
         { id: "states", label: "State Capacity Matrix", icon: "📊", badge: states.length },
+        { id: "registration", label: "National Registration & Approvals", icon: "📋" },
       ]}
       activeTab={activeTab}
       onTabChange={setActiveTab}
       onRefresh={loadData}
       refreshLoading={loading}
+      notifications={notifications}
+      unreadCount={unreadCount}
+      notifLoading={notifLoading}
+      onMarkNotifRead={(nid) => {
+        apiMarkReviewerNotificationRead(nid).then(loadNotifications);
+      }}
+      onMarkAllNotifsRead={() => {
+        apiMarkAllReviewerNotificationsRead().then(loadNotifications);
+      }}
     >
       {error && (
         <ErrorState
@@ -173,6 +211,40 @@ export default function CentralDashboard({ user }: CentralDashboardProps) {
               variant="primary"
             />
           </div>
+
+          {/* Secondary Registration & Capacity Stats */}
+          {metrics.approved_hospitals !== undefined && (
+            <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+              <StatCard
+                title="Approved Facilities"
+                value={metrics.approved_hospitals}
+                subtitle="Empanelled & active in system"
+                icon="✅"
+                variant="default"
+              />
+              <StatCard
+                title="Pending Registrations"
+                value={metrics.pending_applications ?? 0}
+                subtitle="Awaiting administrative review"
+                icon="⏳"
+                variant={(metrics.pending_applications ?? 0) > 0 ? "warning" : "default"}
+              />
+              <StatCard
+                title="Active Bed Reservations"
+                value={metrics.total_reserved_beds ?? 0}
+                subtitle="Reserved / confirmed in transit"
+                icon="🔒"
+                variant="purple"
+              />
+              <StatCard
+                title="Application Approvals"
+                value={metrics.approved_applications ?? 0}
+                subtitle="Processed onboarding requests"
+                icon="📋"
+                variant="primary"
+              />
+            </div>
+          )}
 
           {/* Privacy Architecture Notice */}
           <div className="rounded-xl border border-purple-500/20 bg-purple-950/20 p-4 text-xs text-purple-200">
@@ -241,6 +313,13 @@ export default function CentralDashboard({ user }: CentralDashboardProps) {
             pageSize={10}
           />
         </div>
+      )}
+
+      {/* ============================================================ */}
+      {/* TAB 3: NATIONAL REGISTRATION & APPROVALS (Reviewer Portal)  */}
+      {/* ============================================================ */}
+      {activeTab === "registration" && (
+        <ReviewerPortal user={user} />
       )}
     </DashboardLayout>
   );

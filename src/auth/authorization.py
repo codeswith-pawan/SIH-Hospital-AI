@@ -13,7 +13,8 @@ _GEO_CACHE: dict[str, dict] = {}
 def get_hospital_geo(hospital_id: str) -> dict | None:
     """
     Look up state and district for a given hospital_id.
-    Uses an in-memory cache backed by SQLite hospital master records.
+    Checks PostgreSQL primary database first, with fallback to SQLite master records.
+    Uses an in-memory cache for fast lookups.
     """
     if not hospital_id:
         return None
@@ -21,6 +22,31 @@ def get_hospital_geo(hospital_id: str) -> dict | None:
     if hospital_id in _GEO_CACHE:
         return _GEO_CACHE[hospital_id]
 
+    # 1. Try PostgreSQL master/provisioned hospital records
+    try:
+        from src.database.db_manager import get_session_factory
+        from src.database.pg_models import Hospital as PgHospital
+
+        factory = get_session_factory()
+        session = factory()
+        try:
+            record = session.query(PgHospital).filter(PgHospital.hospital_id == hospital_id).first()
+            if record:
+                geo = {
+                    "hospital_id": record.hospital_id,
+                    "name": record.name,
+                    "state": record.state,
+                    "district": record.district,
+                    "city": record.city,
+                }
+                _GEO_CACHE[hospital_id] = geo
+                return geo
+        finally:
+            session.close()
+    except Exception:
+        pass
+
+    # 2. Fallback to SQLite hospital records
     try:
         from src.database.database import SessionLocal
         from src.database.models import Hospital

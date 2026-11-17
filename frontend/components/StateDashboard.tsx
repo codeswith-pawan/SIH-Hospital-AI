@@ -1,8 +1,14 @@
 "use client";
 
 import React, { useEffect, useState } from "react";
-import { User, StateMetrics, DistrictSummary, Referral } from "@/lib/types";
-import { apiGetStateOverview, apiGetStateReferrals } from "@/lib/api";
+import { User, StateMetrics, DistrictSummary, Referral, NotificationItem } from "@/lib/types";
+import {
+  apiGetStateOverview,
+  apiGetStateReferrals,
+  apiGetReviewerNotifications,
+  apiMarkReviewerNotificationRead,
+  apiMarkAllReviewerNotificationsRead,
+} from "@/lib/api";
 import { formatPercent, formatDateTime } from "@/lib/formatters";
 import { DashboardLayout } from "./shared/DashboardLayout";
 import { StatCard } from "./shared/StatCard";
@@ -10,6 +16,7 @@ import { StatusBadge, PriorityBadge } from "./shared/StatusBadge";
 import { DataTable, Column } from "./shared/DataTable";
 import { ReferralTimeline } from "./shared/ReferralTimeline";
 import { ErrorState } from "./shared/LoadingAndErrorStates";
+import { ReviewerPortal } from "./reviewer/ReviewerPortal";
 
 interface StateDashboardProps {
   user: User;
@@ -26,7 +33,25 @@ export default function StateDashboard({ user }: StateDashboardProps) {
   const [selectedDistrict, setSelectedDistrict] = useState("ALL");
   const [selectedReferral, setSelectedReferral] = useState<Referral | null>(null);
 
+  // Notifications State (Phase 4D-2)
+  const [notifications, setNotifications] = useState<NotificationItem[]>([]);
+  const [unreadCount, setUnreadCount] = useState(0);
+  const [notifLoading, setNotifLoading] = useState(false);
+
   const stateName = user.state || "Punjab";
+
+  const loadNotifications = async () => {
+    setNotifLoading(true);
+    try {
+      const data = await apiGetReviewerNotifications();
+      setNotifications(data.notifications || []);
+      setUnreadCount(data.unread_count || 0);
+    } catch {
+      // Background poll failure
+    } finally {
+      setNotifLoading(false);
+    }
+  };
 
   const loadData = async () => {
     setLoading(true);
@@ -41,6 +66,9 @@ export default function StateDashboard({ user }: StateDashboardProps) {
       // Load State Referrals
       const refRes = await apiGetStateReferrals();
       setReferrals(refRes.referrals || []);
+
+      // Load Reviewer In-App Notifications
+      loadNotifications();
     } catch (err: any) {
       setError(err.message || "Failed to load state health command data.");
     } finally {
@@ -50,6 +78,7 @@ export default function StateDashboard({ user }: StateDashboardProps) {
 
   useEffect(() => {
     loadData();
+    loadNotifications();
   }, []);
 
   // District Summary Columns
@@ -220,11 +249,21 @@ export default function StateDashboard({ user }: StateDashboardProps) {
         { id: "overview", label: "State Overview", icon: "📊" },
         { id: "districts", label: "District Capacity Matrix", icon: "🏛️", badge: districts.length },
         { id: "referrals", label: "State Transfer Flows", icon: "🔄", badge: referrals.length },
+        { id: "registration", label: "Registration & Review", icon: "📋" },
       ]}
       activeTab={activeTab}
       onTabChange={setActiveTab}
       onRefresh={loadData}
       refreshLoading={loading}
+      notifications={notifications}
+      unreadCount={unreadCount}
+      notifLoading={notifLoading}
+      onMarkNotifRead={(nid) => {
+        apiMarkReviewerNotificationRead(nid).then(loadNotifications);
+      }}
+      onMarkAllNotifsRead={() => {
+        apiMarkAllReviewerNotificationsRead().then(loadNotifications);
+      }}
     >
       {error && (
         <ErrorState
@@ -271,6 +310,40 @@ export default function StateDashboard({ user }: StateDashboardProps) {
               variant="primary"
             />
           </div>
+
+          {/* Secondary Registration & Capacity Stats */}
+          {metrics.approved_hospitals !== undefined && (
+            <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+              <StatCard
+                title="Approved Facilities"
+                value={metrics.approved_hospitals}
+                subtitle="Active in state network"
+                icon="✅"
+                variant="default"
+              />
+              <StatCard
+                title="Pending Applications"
+                value={metrics.pending_applications ?? 0}
+                subtitle="Awaiting state/district review"
+                icon="⏳"
+                variant={(metrics.pending_applications ?? 0) > 0 ? "warning" : "default"}
+              />
+              <StatCard
+                title="Reserved Beds"
+                value={metrics.total_reserved_beds ?? 0}
+                subtitle="Active transfer holds"
+                icon="🔒"
+                variant="primary"
+              />
+              <StatCard
+                title="Processed Approvals"
+                value={metrics.approved_applications ?? 0}
+                subtitle="Onboarded institutions"
+                icon="📋"
+                variant="default"
+              />
+            </div>
+          )}
 
           {/* District Capacity Preview Table */}
           <div className="rounded-xl border border-slate-800 bg-slate-900/60 p-5">
@@ -384,6 +457,13 @@ export default function StateDashboard({ user }: StateDashboardProps) {
             pageSize={10}
           />
         </div>
+      )}
+
+      {/* ============================================================ */}
+      {/* TAB 4: REGISTRATION & VERIFICATION (Reviewer Portal)        */}
+      {/* ============================================================ */}
+      {activeTab === "registration" && (
+        <ReviewerPortal user={user} />
       )}
 
       {/* TIMELINE MODAL */}

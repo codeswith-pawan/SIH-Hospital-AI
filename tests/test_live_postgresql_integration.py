@@ -443,3 +443,33 @@ def test_fastapi_client_lifecycle_routes_live(tmp_path, monkeypatch):
     assert comp_resp.status_code == 200, f"Complete failed: {comp_resp.text}"
     assert comp_resp.json()["status"] == "COMPLETED"
 
+
+def test_get_hospital_geo_postgresql_resolution(pg_engine):
+    """
+    Validates fix for V1/F-06:
+    Verifies get_hospital_geo resolves PostgreSQL hospitals (including provisioned ones)
+    and enables accurate state/district geographic authorization.
+    """
+    from src.auth.authorization import get_hospital_geo, can_access_hospital, STATE_ADMIN, DISTRICT_ADMIN, _GEO_CACHE
+
+    Session = sessionmaker(bind=pg_engine)
+    session = Session()
+
+    # Clear cache to guarantee fresh query
+    _GEO_CACHE.clear()
+
+    # Verify existing hospital in PostgreSQL
+    geo = get_hospital_geo("GH00046")
+    assert geo is not None
+    assert geo["hospital_id"] == "GH00046"
+    assert geo["state"].lower() == "punjab"
+
+    # Test State Admin geographic access for PostgreSQL hospital
+    punjab_admin = {"user_id": "U_PB", "role": STATE_ADMIN, "state": "Punjab", "district": None}
+    assert can_access_hospital(punjab_admin, "GH00046") is True
+
+    haryana_admin = {"user_id": "U_HR", "role": STATE_ADMIN, "state": "Haryana", "district": None}
+    assert can_access_hospital(haryana_admin, "GH00046") is False
+
+    session.close()
+

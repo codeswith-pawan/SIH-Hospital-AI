@@ -19,6 +19,15 @@ SIH_Hospital_AI/frontend/.next/
 # Local application data, SQLite databases and runtime state
 /data/
 
+# Environment files and credentials
+.env
+.env.*
+!.env.example
+!.env.production.example
+frontend/.env
+frontend/.env.*
+!frontend/.env.example
+
 # macOS metadata
 .DS_Store
 
@@ -76,3 +85,8 @@ phase20_evaluation_integrity_report 2.md
 
 src/database/patient_service.py 2.save
 src/prediction/bed_reservation.py 2.backup
+
+# Test execution artifacts and reports
+test-results/
+frontend/test-results/
+frontend/e2e-results.json

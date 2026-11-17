@@ -42,10 +42,24 @@ def initialize_hospital_beds(
     available_beds,
     available_icu_beds,
     reset=False,
+    available_emergency_beds=None,
 ):
     """
     Create or load persistent hospital bed inventory.
     """
+    try:
+        from src.database.db_manager import is_postgres, get_referral_repository
+        if is_postgres():
+            repo = get_referral_repository()
+            return repo.initialize_or_reset_inventory(
+                hospital_id=hospital_id,
+                available_beds=int(available_beds),
+                available_icu_beds=int(available_icu_beds),
+                reset=reset,
+                available_emergency_beds=int(available_emergency_beds) if available_emergency_beds is not None else None,
+            )
+    except Exception:
+        pass
 
     if not reset:
         # Check existing persistent inventory
@@ -114,7 +128,7 @@ def reserve_bed(
     hospital_id,
     patient_id,
     bed_type,
-    inventory
+    inventory=None
 ):
     """
     Reserve a GENERAL or ICU bed.
@@ -123,6 +137,24 @@ def reserve_bed(
     such as GENERAL-001 or ICU-004.
     """
     passed_inventory = inventory
+
+    try:
+        from src.database.db_manager import is_postgres, get_referral_repository
+        if is_postgres():
+            repo = get_referral_repository()
+            res = repo.reserve_bed_direct(
+                hospital_id=hospital_id,
+                patient_id=patient_id,
+                bed_type=bed_type,
+            )
+            if passed_inventory is not None and res.get("success"):
+                live_inv = repo.get_hospital_inventory(hospital_id)
+                if live_inv:
+                    passed_inventory.clear()
+                    passed_inventory.update(live_inv)
+            return res
+    except Exception:
+        pass
 
     with RESERVATION_LOCK:
 
@@ -346,11 +378,24 @@ def reserve_bed(
 def confirm_reservation(
     hospital_id,
     patient_id,
-    inventory
+    inventory=None
 ):
     """
     RESERVED -> CONFIRMED
     """
+    try:
+        from src.database.db_manager import is_postgres, get_referral_repository
+        if is_postgres():
+            repo = get_referral_repository()
+            res = repo.confirm_bed_direct(hospital_id, patient_id)
+            if inventory is not None and res.get("success"):
+                live_inv = repo.get_hospital_inventory(hospital_id)
+                if live_inv:
+                    inventory.clear()
+                    inventory.update(live_inv)
+            return res
+    except Exception:
+        pass
 
     with RESERVATION_LOCK:
 
@@ -410,6 +455,13 @@ def mark_bed_occupied(
     """
     CONFIRMED -> OCCUPIED
     """
+    try:
+        from src.database.db_manager import is_postgres, get_referral_repository
+        if is_postgres():
+            repo = get_referral_repository()
+            return repo.occupy_bed_direct(hospital_id, patient_id)
+    except Exception:
+        pass
 
     with RESERVATION_LOCK:
 
@@ -496,7 +548,7 @@ def get_next_available_bed(
 def release_bed(
     hospital_id,
     patient_id,
-    inventory
+    inventory=None
 ):
     """
     Release a RESERVED bed.
@@ -508,6 +560,20 @@ def release_bed(
     the discharge process.
     """
     passed_inventory = inventory
+
+    try:
+        from src.database.db_manager import is_postgres, get_referral_repository
+        if is_postgres():
+            repo = get_referral_repository()
+            res = repo.release_bed_direct(hospital_id, patient_id)
+            if passed_inventory is not None and res.get("success"):
+                live_inv = repo.get_hospital_inventory(hospital_id)
+                if live_inv:
+                    passed_inventory.clear()
+                    passed_inventory.update(live_inv)
+            return res
+    except Exception:
+        pass
 
     with RESERVATION_LOCK:
 
@@ -720,7 +786,7 @@ def release_bed(
 def discharge_patient(
     hospital_id,
     patient_id,
-    inventory
+    inventory=None
 ):
     """
     Discharge an occupied patient.
@@ -730,6 +796,20 @@ def discharge_patient(
     OCCUPIED -> RELEASED
     """
     passed_inventory = inventory
+
+    try:
+        from src.database.db_manager import is_postgres, get_referral_repository
+        if is_postgres():
+            repo = get_referral_repository()
+            res = repo.discharge_patient_direct(hospital_id, patient_id)
+            if passed_inventory is not None and res.get("success"):
+                live_inv = repo.get_hospital_inventory(hospital_id)
+                if live_inv:
+                    passed_inventory.clear()
+                    passed_inventory.update(live_inv)
+            return res
+    except Exception:
+        pass
 
     with RESERVATION_LOCK:
 
@@ -930,6 +1010,15 @@ def get_reservation(
     """
     Get persistent reservation.
     """
+    try:
+        from src.database.db_manager import is_postgres, get_referral_repository
+        if is_postgres():
+            repo = get_referral_repository()
+            res = repo.get_reservation_direct(hospital_id, patient_id)
+            if res is not None:
+                return res
+    except Exception:
+        pass
 
     reservations = load_reservations()
 
@@ -950,13 +1039,27 @@ def get_reservation(
 def expire_reservation(
     hospital_id,
     patient_id,
-    inventory
+    inventory=None
 ):
     """
     Expire an unconfirmed reservation
     after the configured timeout.
     """
     passed_inventory = inventory
+
+    try:
+        from src.database.db_manager import is_postgres, get_referral_repository
+        if is_postgres():
+            repo = get_referral_repository()
+            res = repo.expire_reservation_direct(hospital_id, patient_id)
+            if passed_inventory is not None and res.get("success"):
+                live_inv = repo.get_hospital_inventory(hospital_id)
+                if live_inv:
+                    passed_inventory.clear()
+                    passed_inventory.update(live_inv)
+            return res
+    except Exception:
+        pass
 
     with RESERVATION_LOCK:
 

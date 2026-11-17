@@ -32,6 +32,7 @@ def isolated_storage(tmp_path, monkeypatch):
     Ensure every test in this module runs with completely isolated JSON stores
     in a temporary directory, avoiding any pollution of runtime/production data.
     """
+    orig_db_url = os.environ.get("DATABASE_URL")
     res_path = tmp_path / "test_reservations.json"
     bed_path = tmp_path / "test_bed_inventory.json"
     ref_path = tmp_path / "test_referrals.json"
@@ -39,8 +40,16 @@ def isolated_storage(tmp_path, monkeypatch):
     monkeypatch.setenv("SIH_RESERVATIONS_PATH", str(res_path))
     monkeypatch.setenv("SIH_BED_INVENTORY_PATH", str(bed_path))
     monkeypatch.setenv("SIH_REFERRALS_PATH", str(ref_path))
+    monkeypatch.delenv("DATABASE_URL", raising=False)
 
-    return tmp_path
+    from src.database.db_manager import reset_engine
+    reset_engine()
+    try:
+        yield tmp_path
+    finally:
+        if orig_db_url is not None:
+            os.environ["DATABASE_URL"] = orig_db_url
+        reset_engine()
 
 
 def test_bed_reservation_general_and_icu():

@@ -9,7 +9,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 import jwt
 
-from src.auth.rate_limiter import is_token_revoked
+from src.auth.rate_limiter import is_token_revoked, is_user_session_revoked
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +26,7 @@ def get_jwt_secret() -> str:
     In development mode, a clearly separated dev secret is allowed with a warning.
     """
     env = os.getenv("SIH_ENV", os.getenv("ENVIRONMENT", "development")).lower().strip()
-    secret = os.getenv("SIH_JWT_SECRET", "").strip()
+    secret = os.getenv("SIH_JWT_SECRET", os.getenv("JWT_SECRET_KEY", "")).strip()
 
     is_production = env in ("production", "prod", "staging")
 
@@ -63,6 +63,7 @@ def create_access_token(user: dict) -> str:
         "hospital_id": user.get("hospital_id"),
         "state": user.get("state"),
         "district": user.get("district"),
+        "email": user.get("email"),
         "iat": now,
         "exp": now + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES),
     }
@@ -89,12 +90,20 @@ def decode_access_token(token: str, check_revocation: bool = True) -> Optional[d
 
     try:
         secret_key = get_jwt_secret()
-        return jwt.decode(
+        payload = jwt.decode(
             token,
             secret_key,
             algorithms=[ALGORITHM],
             options={"require": ["exp", "sub"]},
         )
+        if check_revocation:
+            user_id = payload.get("sub") or payload.get("user_id")
+            username = payload.get("username")
+            iat = payload.get("iat")
+            if (user_id and is_user_session_revoked(user_id, iat)) or (username and is_user_session_revoked(username, iat)):
+                logger.warning("Rejected attempt to use JWT issued prior to session revocation for user '%s'.", user_id)
+                return None
+        return payload
     except jwt.ExpiredSignatureError:
         logger.debug("JWT validation failed: signature expired.")
         return None
